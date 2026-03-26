@@ -131,7 +131,7 @@
           "enabled": true,
           "label_distribution": "ldp",
           "interfaces": {
-            "mode": "all_core_links"
+            "mode": "all_core_links" 
           }
         }
       },

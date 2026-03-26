@@ -566,10 +566,12 @@ def gen_vrf_and_pe_ce(node, customers, vpn_services, cust_alloc, core_asn):
             rt = f"{core_asn}:{cust['asn']}"
 
         config += (
-            f"ip vrf {vrf_name}\n"
+            f"vrf definition {vrf_name}\n"
             f" rd {rd}\n"
-            f" route-target export {rt}\n"
-            f" route-target import {rt}\n"
+            f" address-family ipv4\n"
+            f"  route-target export {rt}\n"
+            f"  route-target import {rt}\n"
+            f" exit-address-family\n"
             f"!\n"
         )
 
