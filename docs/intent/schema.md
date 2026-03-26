@@ -1,0 +1,325 @@
+# Référence du schéma `Intent.json` (v4.0)
+
+Ce document décrit **les champs réellement supportés** par `script/script_intent_to_configs.py` et les valeurs attendues.
+
+## Vue d’ensemble
+
+Structure haut niveau:
+
+```json
+{
+  "intent_version": "4.0",
+  "addressing": { ... },
+  "autonomous_systems": { ... },
+  "customers": [ ... ],
+  "vpn_services": { ... },
+  "pe_ce": { ... },
+  "lan": { ... }
+}
+```
+
+## `intent_version`
+
+- **Type**: string
+- **Requis**: recommandé
+- **Valeur attendue**: `"4.0"`
+
+Le script n’impose pas strictement la valeur, mais la documentation et les exemples sont alignés sur `4.0`.
+
+## `addressing`
+
+- **Type**: object
+- **Requis**: oui
+
+Champs:
+
+| Champ | Type | Requis | Exemple | Rôle |
+|---|---:|---:|---|---|
+| `loopback_pool` | string (CIDR) | oui | `1.0.0.0/8` | Pool des loopbacks des nœuds core (PE/P). |
+| `p2p_pool` | string (CIDR) | oui | `10.0.0.0/16` | Pool des liens core P2P. |
+| `customer_pool` | string (CIDR) | oui | `172.16.0.0/16` | Pool des liens CE-PE (accès client). |
+| `p2p_prefix` | int | oui | `30` | Préfixe des sous-réseaux P2P core. |
+| `ce_pe_prefix` | int | recommandé | `30` | Préfixe des sous-réseaux CE-PE. |
+
+Notes:
+- Le script accepte aussi des clés historiques pour le préfixe CE-PE: `pe_ce_prefix` ou `pe_ce.addressing.prefix`.
+- `customer_prefix` peut exister dans certains intents mais n’est pas nécessaire ici.
+
+## `autonomous_systems`
+
+- **Type**: object (map)
+- **Requis**: oui
+
+Chaque entrée (ex: `"AS1"`) décrit un AS “opérateur” (core).
+
+### `autonomous_systems.<asName>.asn`
+- **Type**: int
+- **Requis**: oui
+
+### `autonomous_systems.<asName>.nodes`
+- **Type**: object (map)
+- **Requis**: oui
+
+Format:
+
+```json
+"nodes": {
+  "PE1": { "role": "PE" },
+  "P1":  { "role": "P" }
+}
+```
+
+`role` (enum):
+- `PE`: génère iBGP vpnv4 + VRF + eBGP CE-PE
+- `P`: génère underlay uniquement (IGP/MPLS selon config)
+
+### `autonomous_systems.<asName>.links`
+- **Type**: array
+- **Requis**: oui
+
+Chaque lien core doit avoir 2 endpoints:
+
+```json
+{
+  "endpoints": [
+    { "node": "PE1", "interface": "GigabitEthernet1/0" },
+    { "node": "P1",  "interface": "GigabitEthernet1/0" }
+  ]
+}
+```
+
+Champs:
+
+| Champ | Type | Requis | Défaut | Rôle |
+|---|---:|---:|---|---|
+| `endpoints` | array[2] | oui | — | Extrémités du lien (nœud + interface). |
+| `igp_area` | int | non | `0` | Utilisé si `underlay.igp.area.mode="explicit"`. |
+| `mpls` | bool | non | `false` | Utilisé si `mpls.interfaces.mode="explicit"`. |
+
+## `underlay`
+
+### `underlay.igp`
+- **Type**: object
+- **Requis**: non (mais recommandé)
+
+Champs:
+
+| Champ | Type | Requis | Valeurs | Rôle |
+|---|---:|---:|---|---|
+| `protocol` | string | non | `ospf`, `isis` | Choix IGP (génération OSPF ou IS-IS minimal). |
+| `area.mode` | string | non | `single_area`, `explicit` | Mode de design OSPF area. |
+
+Comportements:
+- `single_area`: tous les réseaux core en area 0.
+- `explicit`: area prise depuis `links[].igp_area`.
+
+### `underlay.mpls`
+- **Type**: object
+- **Requis**: non
+
+Champs:
+
+| Champ | Type | Requis | Valeurs | Rôle |
+|---|---:|---:|---|---|
+| `enabled` | bool | non | true/false | Active MPLS/LDP global + possibilité de `mpls ip` interface. |
+| `label_distribution` | string | non | `ldp` | Indicatif (le script génère LDP). |
+| `interfaces.mode` | string | non | `all_core_links`, `explicit` | Contrôle “mpls ip” par interface. |
+
+Comportements:
+- `all_core_links`: `mpls ip` sur toutes les interfaces core.
+- `explicit`: `mpls ip` seulement si `links[].mpls=true`.
+
+## `bgp` (core)
+
+### `bgp.type`
+- **Type**: string
+- **Requis**: non
+- **Valeur supportée**: `ibgp`
+
+### `bgp.vpnv4`
+- **Type**: bool
+- **Requis**: non
+- **Rôle**: si `true`, le script génère MP-BGP vpnv4 sur les PE.
+
+### `bgp.peering`
+
+```json
+"peering": {
+  "strategy": "rr_clients",
+  "transport": "loopback"
+}
+```
+
+Champs:
+
+| Champ | Type | Requis | Valeurs | Rôle |
+|---|---:|---:|---|---|
+| `strategy` | string | non | `rr_clients`, `full_mesh`, `rr_redundant` | Stratégie de sessions iBGP entre PEs. |
+| `transport` | string | non | `loopback` | Update-source Loopback0. |
+
+### `bgp.route_reflectors`
+
+- **Type**: object
+- **Requis**: si `strategy` vaut `rr_clients` ou `rr_redundant`
+
+```json
+"route_reflectors": { "nodes": ["PE1", "PE2"] }
+```
+
+## `customers`
+
+Liste des clients et de leurs sites.
+
+```json
+{
+  "name": "CUST1",
+  "asn": 65001,
+  "sites": [
+    {
+      "ce": "CE1-1",
+      "pe": "PE1",
+      "link": {
+        "endpoints": [
+          { "node": "CE1-1", "interface": "GigabitEthernet2/0" },
+          { "node": "PE1",   "interface": "GigabitEthernet2/0" }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Champs:
+
+| Champ | Type | Requis | Rôle |
+|---|---:|---:|---|
+| `name` | string | oui | Nom client (sert aussi au mapping VRF). |
+| `asn` | int | oui | ASN client (eBGP CE-PE). |
+| `sites` | array | oui | Sites multi-homing / multi-CE. |
+| `sites[].ce` | string | oui | Nom du routeur CE. |
+| `sites[].pe` | string | oui | PE attaché. |
+| `sites[].link.endpoints` | array[2] | oui | Interfaces CE et PE sur le lien d’accès. |
+
+## `vpn_services`
+
+```json
+"vpn_services": {
+  "type": "l3vpn",
+  "rd": { "mode": "asn_vrfid", "base": 100 },
+  "rt": { "strategy": "auto_per_vrf" },
+  "vrfs": [ { "name": "CUST1", "customer": "CUST1" } ]
+}
+```
+
+### `vpn_services.type`
+- **Type**: string
+- **Requis**: recommandé
+- **Valeur attendue**: `l3vpn`
+
+### `vpn_services.vrfs[]`
+Chaque VRF associe un nom (sur PE) à un client:
+
+| Champ | Type | Requis | Rôle |
+|---|---:|---:|---|
+| `name` | string | non | Nom VRF (défaut = `customer`). |
+| `customer` | string | oui | Référence `customers[].name`. |
+
+### RD: `vpn_services.rd`
+
+| Champ | Type | Requis | Valeurs | Rôle |
+|---|---:|---:|---|---|
+| `mode` | string | non | `asn_vrfid`, `asn_hash` | Construction RD. |
+| `base` | int | non | ex: `100` | Base de l’ID VRF (mode `asn_vrfid`). |
+
+Le script génère un RD **unique par VRF** (recommandé). Il ne génère pas de RD “par route”.
+
+### RT: `vpn_services.rt`
+
+| Champ | Type | Requis | Valeurs | Rôle |
+|---|---:|---:|---|---|
+| `strategy` | string | non | `auto_per_vrf`, `auto_per_customer_asn` | Construction RT import/export. |
+
+## `pe_ce`
+
+Ce bloc documente l’intention, mais le script implémente actuellement le cas eBGP CE-PE.
+
+```json
+"pe_ce": {
+  "routing": "ebgp",
+  "addressing": { "strategy": "derived_from_customer_pool", "prefix": 30 }
+}
+```
+
+Champs:
+- `routing`: attendu `ebgp`
+- `addressing.prefix`: utilisé comme fallback si `addressing.ce_pe_prefix` manque.
+
+## `lan`
+
+Le LAN est un “LAN de test” créé sur chaque CE, avec annonce dans le BGP client.
+
+Champs communs:
+
+```json
+"lan": {
+  "enabled": true,
+  "type": "loopback",
+  "addressing": { "base_pool": "10.0.0.0/8", "prefix": 32, "strategy": "per_site" },
+  "bgp": { "advertise": true, "method": "network_statement" }
+}
+```
+
+### `lan.enabled`
+- **Type**: bool
+- **Défaut**: `true`
+
+### `lan.type` (enum)
+- `loopback`: interface CE = `lan.naming.pattern` (défaut `Loopback0`).
+- `interface`: interface CE = `lan.interface.name` (ou override par site, voir ci-dessous).
+- `subinterface_vlan`: interface CE = `<parent>.<vlan>` et ajout `encapsulation dot1Q`.
+
+Champs spécifiques:
+
+#### `loopback`
+```json
+"naming": { "pattern": "Loopback0" }
+```
+
+#### `interface`
+```json
+"interface": { "name": "GigabitEthernet0/1" }
+```
+
+Option: override par site (si besoin):
+```json
+"sites": [
+  { "...": "...", "lan": { "interface": "GigabitEthernet0/2" } }
+]
+```
+
+#### `subinterface_vlan`
+```json
+"subinterface": { "parent": "GigabitEthernet0/1", "vlan_base": 200 }
+```
+
+Le VLAN effectif est `vlan_base + site_index`.
+
+### `lan.bgp`
+
+| Champ | Type | Requis | Valeurs | Rôle |
+|---|---:|---:|---|---|
+| `advertise` | bool | non | true/false | Active l’annonce du LAN dans BGP côté CE. |
+| `method` | string | non | `network_statement`, `redistribute_connected` | Méthode d’annonce. |
+
+Notes:
+- `redistribute_connected` utilise une route-map qui match **uniquement** l’interface LAN (pour éviter d’annoncer le lien CE-PE).
+
+## Rétro-compatibilité (intents historiques)
+
+Le script normalise certains champs historiques pour rester compatible:
+- `underlay.igp.area_design` → `underlay.igp.area.mode`
+- `underlay.mpls.enabled_on` → `underlay.mpls.interfaces.mode` (approximation vers `all_core_links`)
+- `bgp.route_reflector` → `bgp.route_reflectors.nodes`
+- `vpn_services.rt_strategy` → `vpn_services.rt.strategy`
+- `vpn_services.rd_strategy` est ignoré/supprimé
+

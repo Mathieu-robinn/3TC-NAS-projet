@@ -1,1 +1,8 @@
-/*/c7200*
+# GNS3 Dynamips runtime files are volatile/large.
+# Keep only startup-configs versioned.
+project-files/dynamips/**
+
+# Re-include startup-configs (need to unignore parent dirs too)
+!project-files/dynamips/*/
+!project-files/dynamips/*/configs/
+!project-files/dynamips/*/configs/i*_startup-config.cfg

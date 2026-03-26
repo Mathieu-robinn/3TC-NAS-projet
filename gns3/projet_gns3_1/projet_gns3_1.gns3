@@ -198,38 +198,6 @@
             },
             {
                 "filters": {},
-                "link_id": "6f598c96-649e-414d-a1f6-34ce69355bfc",
-                "link_style": {},
-                "nodes": [
-                    {
-                        "adapter_number": 2,
-                        "label": {
-                            "rotation": 0,
-                            "style": "font-family: TypeWriter;font-size: 10.0;font-weight: bold;fill: #000000;fill-opacity: 1.0;",
-                            "text": "g2/0",
-                            "x": 54,
-                            "y": 26
-                        },
-                        "node_id": "6e871072-995e-4903-bc9e-feb0c24a873d",
-                        "port_number": 0
-                    },
-                    {
-                        "adapter_number": 2,
-                        "label": {
-                            "rotation": 0,
-                            "style": "font-family: TypeWriter;font-size: 10.0;font-weight: bold;fill: #000000;fill-opacity: 1.0;",
-                            "text": "g2/0",
-                            "x": -49,
-                            "y": 23
-                        },
-                        "node_id": "126df985-b74a-4041-86d4-b5b277dc62b0",
-                        "port_number": 0
-                    }
-                ],
-                "suspend": false
-            },
-            {
-                "filters": {},
                 "link_id": "7e18e9b0-8bfb-494a-8f83-2649a1a71162",
                 "link_style": {},
                 "nodes": [

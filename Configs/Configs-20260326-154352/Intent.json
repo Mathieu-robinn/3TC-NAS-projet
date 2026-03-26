@@ -1,5 +1,5 @@
 {
-  "intent_version": "3.1",
+  "intent_version": "4.0",
 
   "addressing": {
     "loopback_pool": "1.0.0.0/8",
@@ -8,21 +8,6 @@
     "p2p_prefix": 30,
     "customer_prefix": 24,
     "ce_pe_prefix": 30
-  },
-
-  "autogen_rules": {
-    "loopbacks": {
-      "strategy": "incremental_per_node"
-    },
-    "p2p_links": {
-      "strategy": "incremental_per_link"
-    },
-    "customer_lans": {
-      "strategy": "incremental_per_site"
-    },
-    "ce_pe_links": {
-      "strategy": "incremental_per_link"
-    }
   },
 
   "autonomous_systems": {
@@ -94,22 +79,24 @@
       "underlay": {
         "igp": {
           "protocol": "ospf",
-          "area_design": "single_area",
-          "advertise": ["loopbacks", "core_links"]
+          "area": {
+            "mode": "single_area"
+          }
         },
         "mpls": {
           "enabled": true,
           "label_distribution": "ldp",
-          "enabled_on": ["core_links"]
+          "interfaces": {
+            "mode": "all_core_links"
+          }
         }
       },
 
       "bgp": {
         "type": "ibgp",
         "vpnv4": true,
-        "route_reflector": {
-          "enabled": true,
-          "node": "PE1"
+        "route_reflectors": {
+          "nodes": ["PE1"]
         },
         "peering": {
           "strategy": "rr_clients",
@@ -202,8 +189,13 @@
 
   "vpn_services": {
     "type": "l3vpn",
-    "rd_strategy": "auto_per_vrf",
-    "rt_strategy": "auto_per_vrf",
+    "rd": {
+      "mode": "asn_vrfid",
+      "base": 100
+    },
+    "rt": {
+      "strategy": "auto_per_vrf"
+    },
     "vrfs": [
       {
         "name": "CUST1",
@@ -228,43 +220,20 @@
     }
   },
 
-  "policies": {
-    "vpn_isolation": "strict",
-    "intra_vpn_connectivity": "full_mesh",
-    "inter_vpn_connectivity": "deny"
-  },
-
   "lan": {
-  "type": "loopback",
-  "enabled": true,
-
-  "addressing": {
-    "base_pool": "10.0.0.0/8",
-    "prefix": 32,
-    "strategy": "per_site"
-  },
-
-  "naming": {
-    "pattern": "Loopback0"
-  },
-
-  "bgp": {
-    "advertise": true,
-    "method": "network_statement"
-  }
-},
-
-  "validation": {
-    "checks": [
-      "unique loopback allocation per node",
-      "unique p2p subnet allocation per core link",
-      "unique ce-pe subnet allocation per access link",
-      "igp converged in AS1",
-      "ldp neighbors established on all core links",
-      "route reflector sessions established",
-      "vpnv4 routes exchanged between PE routers",
-      "vrf separation enforced",
-      "customer reachability only within same vpn"
-    ]
+    "type": "loopback",
+    "enabled": true,
+    "addressing": {
+      "base_pool": "10.0.0.0/8",
+      "prefix": 32,
+      "strategy": "per_site"
+    },
+    "naming": {
+      "pattern": "Loopback0"
+    },
+    "bgp": {
+      "advertise": true,
+      "method": "network_statement"
+    }
   }
 }

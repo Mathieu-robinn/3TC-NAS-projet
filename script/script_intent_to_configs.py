@@ -16,6 +16,7 @@ import sys
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple
 
 
 # ─────────────────────────────────────────────
@@ -36,8 +37,7 @@ def normalize_core_links(raw_links):
         "endpoints": [
           {"node": "PE1", "interface": "Gi1/0"},
           {"node": "P1",  "interface": "Gi1/0"}
-        ],
-        "type": "core"
+        ]
       }
     Retourne une liste normalisée.
     """
@@ -47,17 +47,83 @@ def normalize_core_links(raw_links):
             normalized.append({
                 "a": {"node": link[0], "interface": None},
                 "b": {"node": link[1], "interface": None},
-                "type": "core"
             })
         elif isinstance(link, dict) and "endpoints" in link and len(link["endpoints"]) == 2:
             ep1, ep2 = link["endpoints"]
             normalized.append({
                 "a": {"node": ep1["node"], "interface": ep1.get("interface")},
                 "b": {"node": ep2["node"], "interface": ep2.get("interface")},
-                "type": link.get("type", "core")
             })
         else:
             raise ValueError(f"Format de lien core non supporté : {link}")
+    return normalized
+
+
+def _deep_get(dct: Dict[str, Any], path: List[str], default=None):
+    cur: Any = dct
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur
+
+
+def normalize_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Accepte l'intent historique et un schéma plus récent.
+    Retourne une structure cohérente (sans modifier l'original).
+    """
+    normalized = json.loads(json.dumps(intent))
+
+    # Defaults LAN (historique)
+    if "lan" not in normalized:
+        normalized["lan"] = {
+            "enabled": True,
+            "type": "loopback",
+            "addressing": {"base_pool": "10.0.0.0/8", "prefix": 32, "strategy": "per_site"},
+            "naming": {"pattern": "Loopback0"},
+            "bgp": {"advertise": True, "method": "network_statement"},
+        }
+
+    # Underlay normalization (area_design -> area.mode)
+    for _, as_data in normalized.get("autonomous_systems", {}).items():
+        underlay = as_data.setdefault("underlay", {})
+        igp = underlay.setdefault("igp", {})
+        area_design = igp.pop("area_design", None)
+        area = igp.setdefault("area", {})
+        if area_design and "mode" not in area:
+            # historical value example: "single_area"
+            area["mode"] = area_design
+
+        mpls = underlay.setdefault("mpls", {})
+        enabled_on = mpls.pop("enabled_on", None)
+        interfaces = mpls.setdefault("interfaces", {})
+        if enabled_on and "mode" not in interfaces:
+            # historical intent used ["core_links"], keep closest semantic
+            interfaces["mode"] = "all_core_links"
+
+        # BGP normalization
+        bgp = as_data.setdefault("bgp", {})
+        rr = bgp.pop("route_reflector", None)
+        rrs = bgp.setdefault("route_reflectors", {})
+        if rr and rr.get("enabled") and not rrs.get("nodes"):
+            if rr.get("node"):
+                rrs["nodes"] = [rr["node"]]
+        peering = bgp.setdefault("peering", {})
+        if peering.get("strategy") is None:
+            peering["strategy"] = "rr_clients" if rrs.get("nodes") else "full_mesh"
+        if peering.get("transport") is None:
+            peering["transport"] = "loopback"
+
+    # VPN services normalization
+    vpn = normalized.setdefault("vpn_services", {})
+    if "rd_strategy" in vpn:
+        vpn.pop("rd_strategy", None)
+    if "rt_strategy" in vpn:
+        # keep as legacy alias to rt.strategy
+        rt = vpn.setdefault("rt", {})
+        rt.setdefault("strategy", vpn.pop("rt_strategy"))
+
     return normalized
 
 
@@ -93,10 +159,44 @@ def validate_intent(intent):
             errors.append("Champ lan.addressing.base_pool manquant")
         if "prefix" not in lan_addr:
             errors.append("Champ lan.addressing.prefix manquant")
+        lan_type = lan_cfg.get("type", "loopback")
+        if lan_type not in {"loopback", "interface", "subinterface_vlan"}:
+            errors.append(f"lan.type invalide: {lan_type}")
+        if lan_type == "interface":
+            iface = _deep_get(lan_cfg, ["interface", "name"])
+            if not iface:
+                errors.append("lan.interface.name requis quand lan.type=interface")
+        if lan_type == "subinterface_vlan":
+            parent = _deep_get(lan_cfg, ["subinterface", "parent"])
+            base = _deep_get(lan_cfg, ["subinterface", "vlan_base"])
+            if not parent:
+                errors.append("lan.subinterface.parent requis quand lan.type=subinterface_vlan")
+            if base is None:
+                errors.append("lan.subinterface.vlan_base requis quand lan.type=subinterface_vlan")
 
     for as_name, as_data in intent.get("autonomous_systems", {}).items():
         if "asn" not in as_data:
             errors.append(f"{as_name}: asn manquant")
+
+        # Underlay enums
+        igp = _deep_get(as_data, ["underlay", "igp"], {}) or {}
+        protocol = igp.get("protocol", "ospf")
+        if protocol not in {"ospf", "isis"}:
+            errors.append(f"{as_name}: underlay.igp.protocol invalide: {protocol}")
+        area_mode = _deep_get(igp, ["area", "mode"], "single_area")
+        if area_mode not in {"single_area", "explicit"}:
+            errors.append(f"{as_name}: underlay.igp.area.mode invalide: {area_mode}")
+
+        bgp = as_data.get("bgp", {}) or {}
+        if bgp.get("type", "ibgp") not in {"ibgp"}:
+            errors.append(f"{as_name}: bgp.type invalide: {bgp.get('type')}")
+        peering_strategy = _deep_get(bgp, ["peering", "strategy"], "rr_clients")
+        if peering_strategy not in {"rr_clients", "full_mesh", "rr_redundant"}:
+            errors.append(f"{as_name}: bgp.peering.strategy invalide: {peering_strategy}")
+        if peering_strategy in {"rr_clients", "rr_redundant"}:
+            rr_nodes = _deep_get(bgp, ["route_reflectors", "nodes"], [])
+            if not rr_nodes:
+                errors.append(f"{as_name}: bgp.route_reflectors.nodes requis pour strategy={peering_strategy}")
 
         seen_interfaces = {}
         for link in normalize_core_links(as_data.get("links", [])):
@@ -152,7 +252,6 @@ def alloc_core_links(links, pool, prefix_len):
             "mask": str(subnet.netmask),
             "network": str(subnet.network_address),
             "prefix_len": prefix_len,
-            "type": link.get("type", "core")
         })
     return result
 
@@ -210,11 +309,34 @@ def alloc_customer_lans(customers, lan_cfg):
                 mask = str(subnet.netmask)
 
             key = (cust["name"], site["ce"], site["pe"])
+            lan_type = lan_cfg.get("type", "loopback")
+            interface = None
+            encapsulation = None
+
+            if lan_type == "loopback":
+                interface = lan_cfg.get("naming", {}).get("pattern", "Loopback0")
+            elif lan_type == "interface":
+                # Can be overridden per site: site.lan.interface
+                interface = (
+                    _deep_get(site, ["lan", "interface"])
+                    or _deep_get(lan_cfg, ["interface", "name"])
+                    or "GigabitEthernet0/1"
+                )
+            elif lan_type == "subinterface_vlan":
+                parent = _deep_get(site, ["lan", "parent"]) or _deep_get(lan_cfg, ["subinterface", "parent"]) or "GigabitEthernet0/1"
+                vlan_base = int(_deep_get(lan_cfg, ["subinterface", "vlan_base"], 100))
+                vlan = vlan_base + site_index
+                interface = f"{parent}.{vlan}"
+                encapsulation = vlan
+            else:
+                raise ValueError(f"lan.type invalide: {lan_type}")
+
             result[key] = {
                 "customer": cust["name"],
                 "ce": site["ce"],
                 "pe": site["pe"],
-                "interface": lan_cfg.get("naming", {}).get("pattern", "Loopback0"),
+                "interface": interface,
+                "encapsulation": encapsulation,
                 "ip": lan_ip,
                 "mask": mask,
                 "network": str(subnet.network_address),
@@ -245,7 +367,9 @@ def get_node_core_links(node, core_alloc):
                 "neighbor_ip": link["b_ip"],
                 "mask": link["mask"],
                 "network": link["network"],
-                "prefix_len": link["prefix_len"]
+                "prefix_len": link["prefix_len"],
+                "igp_area": link.get("igp_area", 0),
+                "mpls": link.get("mpls", False),
             })
         elif link["b_node"] == node:
             links.append({
@@ -255,7 +379,9 @@ def get_node_core_links(node, core_alloc):
                 "neighbor_ip": link["a_ip"],
                 "mask": link["mask"],
                 "network": link["network"],
-                "prefix_len": link["prefix_len"]
+                "prefix_len": link["prefix_len"],
+                "igp_area": link.get("igp_area", 0),
+                "mpls": link.get("mpls", False),
             })
     return links
 
@@ -295,7 +421,7 @@ def gen_loopback(node, loopbacks):
     )
 
 
-def gen_core_interfaces(node, core_alloc, mpls_enabled):
+def gen_core_interfaces(node, core_alloc):
     config = ""
     for link in get_node_core_links(node, core_alloc):
         if not link["interface"]:
@@ -306,22 +432,21 @@ def gen_core_interfaces(node, core_alloc, mpls_enabled):
             f" ip address {link['ip']} {link['mask']}\n"
             f" no shutdown\n"
         )
-        if mpls_enabled:
+        if link.get("mpls"):
             config += " mpls ip\n"
         config += "!\n"
     return config
 
 
-def gen_ospf(node, core_alloc, loopbacks):
+def gen_ospf(node, core_alloc, loopbacks, area_mode: str = "single_area"):
     router_id = loopbacks[node]
-    config = (
-        f"router ospf 1\n"
-        f" router-id {router_id}\n"
-        f" network {router_id} 0.0.0.0 area 0\n"
-    )
+    config = (f"router ospf 1\n" f" router-id {router_id}\n")
+    # Loopback always in area 0 for simplicity/compat
+    config += f" network {router_id} 0.0.0.0 area 0\n"
     for link in get_node_core_links(node, core_alloc):
         wildcard = wildcard_from_mask(link["mask"])
-        config += f" network {link['network']} {wildcard} area 0\n"
+        area = int(link.get("igp_area", 0)) if area_mode != "single_area" else 0
+        config += f" network {link['network']} {wildcard} area {area}\n"
     config += "!\n"
     return config
 
@@ -335,10 +460,9 @@ def gen_mpls():
     )
 
 
-def gen_ibgp(node, asn, loopbacks, all_pe, rr_config):
+def gen_ibgp(node, asn, loopbacks, all_pe, peering_cfg, rr_nodes: List[str]):
     router_id = loopbacks[node]
-    rr_node = rr_config["node"]
-    rr_ip = loopbacks[rr_node]
+    strategy = peering_cfg.get("strategy", "rr_clients")
 
     config = (
         f"router bgp {asn}\n"
@@ -347,46 +471,86 @@ def gen_ibgp(node, asn, loopbacks, all_pe, rr_config):
         f" no bgp default ipv4-unicast\n"
     )
 
-    if node == rr_node:
+    def add_neighbor(ip: str):
+        return f" neighbor {ip} remote-as {asn}\n neighbor {ip} update-source Loopback0\n"
+
+    if strategy == "full_mesh":
         for pe in all_pe:
             if pe == node:
                 continue
-            pe_ip = loopbacks[pe]
-            config += (
-                f" neighbor {pe_ip} remote-as {asn}\n"
-                f" neighbor {pe_ip} update-source Loopback0\n"
-            )
+            config += add_neighbor(loopbacks[pe])
+    elif strategy in {"rr_clients", "rr_redundant"}:
+        if not rr_nodes:
+            raise ValueError("route_reflectors.nodes vide alors que strategy RR est demandée")
+        if node in rr_nodes:
+            for pe in all_pe:
+                if pe == node:
+                    continue
+                config += add_neighbor(loopbacks[pe])
+        else:
+            for rr in rr_nodes:
+                config += add_neighbor(loopbacks[rr])
     else:
-        config += (
-            f" neighbor {rr_ip} remote-as {asn}\n"
-            f" neighbor {rr_ip} update-source Loopback0\n"
-        )
+        raise ValueError(f"Stratégie iBGP inconnue: {strategy}")
 
     config += " !\n address-family vpnv4\n"
-    if node == rr_node:
+    if strategy == "full_mesh":
         for pe in all_pe:
             if pe == node:
                 continue
             pe_ip = loopbacks[pe]
-            config += (
-                f"  neighbor {pe_ip} activate\n"
-                f"  neighbor {pe_ip} send-community both\n"
-                f"  neighbor {pe_ip} route-reflector-client\n"
-            )
+            config += f"  neighbor {pe_ip} activate\n  neighbor {pe_ip} send-community both\n"
     else:
-        config += (
-            f"  neighbor {rr_ip} activate\n"
-            f"  neighbor {rr_ip} send-community both\n"
-        )
+        # RR-based
+        if node in rr_nodes:
+            for pe in all_pe:
+                if pe == node:
+                    continue
+                pe_ip = loopbacks[pe]
+                config += (
+                    f"  neighbor {pe_ip} activate\n"
+                    f"  neighbor {pe_ip} send-community both\n"
+                    f"  neighbor {pe_ip} route-reflector-client\n"
+                )
+        else:
+            for rr in rr_nodes:
+                rr_ip = loopbacks[rr]
+                config += f"  neighbor {rr_ip} activate\n  neighbor {rr_ip} send-community both\n"
     config += " exit-address-family\n!\n"
     return config
+
+
+def _compute_rd_rt(vpn_services: Dict[str, Any], core_asn: int, vrf_name: str, vrf_index: int) -> Tuple[str, str]:
+    # Defaults: unique per VRF
+    rd_cfg = vpn_services.get("rd", {}) or {}
+    rd_mode = rd_cfg.get("mode", "asn_vrfid")
+    rd_base = int(rd_cfg.get("base", 100))
+    vrf_id = rd_base + vrf_index
+    if rd_mode == "asn_vrfid":
+        rd = f"{core_asn}:{vrf_id}"
+    elif rd_mode == "asn_hash":
+        rd = f"{core_asn}:{abs(hash(vrf_name)) % 65535}"
+    else:
+        raise ValueError(f"vpn_services.rd.mode invalide: {rd_mode}")
+
+    rt_cfg = vpn_services.get("rt", {}) or {}
+    rt_strategy = rt_cfg.get("strategy", "auto_per_vrf")
+    if rt_strategy == "auto_per_vrf":
+        rt = f"{core_asn}:{vrf_id}"
+    elif rt_strategy == "auto_per_customer_asn":
+        # kept for compatibility by setting per-VRF later when customer AS known
+        rt = "AUTO_PER_CUSTOMER_ASN"
+    else:
+        raise ValueError(f"vpn_services.rt.strategy invalide: {rt_strategy}")
+
+    return rd, rt
 
 
 def gen_vrf_and_pe_ce(node, customers, vpn_services, cust_alloc, core_asn):
     config = ""
     vrfs = vpn_services.get("vrfs", [])
 
-    for vrf in vrfs:
+    for vrf_index, vrf in enumerate(vrfs, start=1):
         cust_name = vrf["customer"]
         vrf_name = vrf.get("name", cust_name)
         cust = next((c for c in customers if c["name"] == cust_name), None)
@@ -397,8 +561,9 @@ def gen_vrf_and_pe_ce(node, customers, vpn_services, cust_alloc, core_asn):
         if not sites_on_this_pe:
             continue
 
-        rd = f"{core_asn}:{cust['asn']}"
-        rt = f"{core_asn}:{cust['asn']}"
+        rd, rt = _compute_rd_rt(vpn_services, core_asn, vrf_name, vrf_index)
+        if rt == "AUTO_PER_CUSTOMER_ASN":
+            rt = f"{core_asn}:{cust['asn']}"
 
         config += (
             f"ip vrf {vrf_name}\n"
@@ -454,8 +619,10 @@ def gen_ce(site, cust, cust_alloc, cust_lans, core_asn, lan_cfg):
     )
 
     if lan:
+        config += f"interface {lan['interface']}\n"
+        if lan.get("encapsulation"):
+            config += f" encapsulation dot1Q {lan['encapsulation']}\n"
         config += (
-            f"interface {lan['interface']}\n"
             f" description LAN_TEST_{cust['name']}_{ce_name}\n"
             f" ip address {lan['ip']} {lan['mask']}\n"
             f" no shutdown\n"
@@ -476,6 +643,17 @@ def gen_ce(site, cust, cust_alloc, cust_lans, core_asn, lan_cfg):
     method = lan_cfg.get("bgp", {}).get("method", "network_statement")
     if lan and advertise and method == "network_statement":
         config += f"  network {lan['ip']} mask {lan['mask']}\n"
+    elif lan and advertise and method == "redistribute_connected":
+        # Avoid redistributing the CE-PE link: match only the LAN interface
+        config += (
+            f"  redistribute connected route-map RM_LAN_ONLY\n"
+            f" exit-address-family\n"
+            f"!\n"
+            f"route-map RM_LAN_ONLY permit 10\n"
+            f" match interface {lan['interface']}\n"
+        )
+        config += "!\nend\n"
+        return config
 
     config += (
         f" exit-address-family\n"
@@ -485,23 +663,70 @@ def gen_ce(site, cust, cust_alloc, cust_lans, core_asn, lan_cfg):
     return config
 
 
+def _enrich_core_alloc_with_underlay(core_alloc: List[Dict[str, Any]], core_links: List[Dict[str, Any]], as_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    # Copy to avoid mutating callers
+    alloc = json.loads(json.dumps(core_alloc))
+    underlay = as_data.get("underlay", {}) or {}
+    igp = underlay.get("igp", {}) or {}
+    area_mode = _deep_get(igp, ["area", "mode"], "single_area")
+    mpls_cfg = underlay.get("mpls", {}) or {}
+    mpls_enabled = bool(mpls_cfg.get("enabled", False))
+    mpls_mode = _deep_get(mpls_cfg, ["interfaces", "mode"], "all_core_links") if mpls_enabled else "disabled"
+
+    for i, link_alloc in enumerate(alloc):
+        link = core_links[i]
+
+        if area_mode == "single_area":
+            link_alloc["igp_area"] = 0
+        elif area_mode == "explicit":
+            link_alloc["igp_area"] = int(link.get("igp_area", 0))
+        else:
+            raise ValueError(f"underlay.igp.area.mode invalide: {area_mode}")
+
+        if not mpls_enabled:
+            link_alloc["mpls"] = False
+        else:
+            if mpls_mode == "all_core_links":
+                link_alloc["mpls"] = True
+            elif mpls_mode == "explicit":
+                link_alloc["mpls"] = bool(link.get("mpls", False))
+            else:
+                raise ValueError(f"underlay.mpls.interfaces.mode invalide: {mpls_mode}")
+
+    return alloc
+
+
 def gen_core_router(node, role, as_data, asn, loopbacks, core_alloc, customers, vpn_services, cust_alloc):
-    mpls_enabled = as_data.get("underlay", {}).get("mpls", {}).get("enabled", False)
     igp = as_data.get("underlay", {}).get("igp", {})
     all_pe = get_nodes_by_role(as_data, "PE")
+    area_mode = _deep_get(igp, ["area", "mode"], "single_area")
 
     config = gen_header(node)
     config += gen_loopback(node, loopbacks)
-    config += gen_core_interfaces(node, core_alloc, mpls_enabled)
+    config += gen_core_interfaces(node, core_alloc)
 
     if igp.get("protocol") == "ospf":
-        config += gen_ospf(node, core_alloc, loopbacks)
+        config += gen_ospf(node, core_alloc, loopbacks, area_mode=area_mode)
+    elif igp.get("protocol") == "isis":
+        # Basic IS-IS stub (L2 only). Kept minimal for lab usage.
+        config += (
+            "router isis 1\n"
+            f" net 49.0001.{int(asn):04d}.{int(asn):04d}.{int(asn):04d}.00\n"
+            " is-type level-2-only\n"
+            "!\n"
+        )
+        for link in get_node_core_links(node, core_alloc):
+            if link["interface"]:
+                config += f"interface {link['interface']}\n ip router isis 1\n!\n"
 
-    if mpls_enabled:
+    if as_data.get("underlay", {}).get("mpls", {}).get("enabled", False):
         config += gen_mpls()
 
     if role == "PE" and as_data.get("bgp", {}).get("vpnv4"):
-        config += gen_ibgp(node, asn, loopbacks, all_pe, as_data["bgp"]["route_reflector"])
+        bgp = as_data.get("bgp", {}) or {}
+        peering_cfg = bgp.get("peering", {}) or {}
+        rr_nodes = _deep_get(bgp, ["route_reflectors", "nodes"], []) or []
+        config += gen_ibgp(node, asn, loopbacks, all_pe, peering_cfg, rr_nodes)
         config += gen_vrf_and_pe_ce(node, customers, vpn_services, cust_alloc, asn)
 
     config += "end\n"
@@ -518,25 +743,7 @@ def main():
         sys.exit(1)
 
     intent_path = Path(sys.argv[1])
-    intent = load_intent(intent_path)
-
-    if "lan" not in intent:
-        intent["lan"] = {
-            "type": "loopback",
-            "enabled": True,
-            "addressing": {
-                "base_pool": "10.0.0.0/8",
-                "prefix": 32,
-                "strategy": "per_site"
-            },
-            "naming": {
-                "pattern": "Loopback0"
-            },
-            "bgp": {
-                "advertise": True,
-                "method": "network_statement"
-            }
-        }
+    intent = normalize_intent(load_intent(intent_path))
 
     validate_intent(intent)
 
@@ -554,7 +761,8 @@ def main():
         core_links = normalize_core_links(as_data.get("links", []))
 
         loopbacks = alloc_loopbacks(all_nodes, addr["loopback_pool"])
-        core_alloc = alloc_core_links(core_links, addr["p2p_pool"], addr["p2p_prefix"])
+        core_alloc_raw = alloc_core_links(core_links, addr["p2p_pool"], addr["p2p_prefix"])
+        core_alloc = _enrich_core_alloc_with_underlay(core_alloc_raw, core_links, as_data)
 
         ce_pe_prefix = (
             addr.get("ce_pe_prefix")
