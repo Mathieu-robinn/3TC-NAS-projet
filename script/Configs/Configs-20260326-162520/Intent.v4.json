@@ -79,7 +79,7 @@
             },
             {
               "node": "P4",
-              "interface": "GigabitEthernet1/0"
+              "interface": "GigabitEthernet2/0"
             }
           ]
         },
@@ -91,7 +91,7 @@
             },
             {
               "node": "P4",
-              "interface": "GigabitEthernet2/0"
+              "interface": "GigabitEthernet3/0"
             }
           ]
         },
