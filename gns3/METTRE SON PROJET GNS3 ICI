@@ -1,0 +1,5 @@
+Chaque personne doit placer son projet GNS3 local dans ce dossier.
+Exemple : gns3/projet_gns3_1
+
+Ce fichier est versionné pour documenter l'usage, mais tout le reste
+du contenu de gns3/ est ignoré par Git (voir .gitignore).
