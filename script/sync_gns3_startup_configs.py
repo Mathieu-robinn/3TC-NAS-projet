@@ -85,14 +85,27 @@ def main(argv: list[str]) -> int:
         )
     )
     parser.add_argument(
+        "project_root",
+        help=(
+            "Racine du projet GNS3, par ex. gns3/projet_gns3_1. "
+            "Le fichier .gns3 est déduit comme <project_root>/<nom_du_dossier>.gns3 sauf si --gns3-file est fourni."
+        ),
+    )
+    parser.add_argument(
         "--gns3-file",
-        default=str(Path("gns3") / "projet_gns3_1" / "projet_gns3_1.gns3"),
-        help="Chemin vers le fichier .gns3 (défaut: gns3/projet_gns3_1/projet_gns3_1.gns3)",
+        default=None,
+        help=(
+            "Chemin vers le fichier .gns3. "
+            "Par défaut: <project_root>/<nom_du_dossier>.gns3"
+        ),
     )
     parser.add_argument(
         "--project-root",
-        default=str(Path("gns3") / "projet_gns3_1"),
-        help="Racine du projet GNS3 (défaut: gns3/projet_gns3_1)",
+        default=None,
+        help=(
+            "Racine du projet GNS3. Par défaut: valeur de l'argument positionnel project_root. "
+            "Utile si l'argument positionnel est un alias/symlink."
+        ),
     )
     parser.add_argument(
         "--configs-base",
@@ -111,8 +124,16 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    gns3_file = Path(args.gns3_file)
-    project_root = Path(args.project_root)
+    # Détermination de la racine du projet GNS3
+    positional_root = Path(args.project_root)
+    project_root = Path(args.project_root) if args.project_root else positional_root
+
+    # Si aucun --gns3-file n'est fourni, on déduit le nom du fichier à partir du dossier
+    if args.gns3_file is not None:
+        gns3_file = Path(args.gns3_file)
+    else:
+        project_name = project_root.name
+        gns3_file = project_root / f"{project_name}.gns3"
     configs_base = Path(args.configs_base)
     strict = not args.no_strict
 
