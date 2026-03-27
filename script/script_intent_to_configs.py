@@ -460,6 +460,18 @@ def gen_mpls():
     )
 
 
+def isis_net_from_loopback(loopback_ip: str, area: str = "49.0001") -> str:
+    """
+    Build a deterministic, unique NET from loopback IPv4.
+    Example 1.0.0.4 -> 49.0001.0100.0004.00
+    """
+    octets = [int(x) for x in loopback_ip.split(".")]
+    if len(octets) != 4:
+        raise ValueError(f"Loopback IPv4 invalide pour NET IS-IS: {loopback_ip}")
+    system_id = f"{octets[0]:02d}{octets[1]:02d}.{octets[2]:02d}{octets[3]:02d}.0001"
+    return f"{area}.{system_id}.00"
+
+
 def gen_ibgp(node, asn, loopbacks, all_pe, peering_cfg, rr_nodes: List[str]):
     router_id = loopbacks[node]
     strategy = peering_cfg.get("strategy", "rr_clients")
@@ -510,8 +522,10 @@ def gen_ibgp(node, asn, loopbacks, all_pe, peering_cfg, rr_nodes: List[str]):
                 config += (
                     f"  neighbor {pe_ip} activate\n"
                     f"  neighbor {pe_ip} send-community both\n"
-                    f"  neighbor {pe_ip} route-reflector-client\n"
                 )
+                # Only non-RR peers are RR clients.
+                if pe not in rr_nodes:
+                    config += f"  neighbor {pe_ip} route-reflector-client\n"
         else:
             for rr in rr_nodes:
                 rr_ip = loopbacks[rr]
@@ -710,13 +724,15 @@ def gen_core_router(node, role, as_data, asn, loopbacks, core_alloc, customers, 
     if igp.get("protocol") == "ospf":
         config += gen_ospf(node, core_alloc, loopbacks, area_mode=area_mode)
     elif igp.get("protocol") == "isis":
-        # Basic IS-IS stub (L2 only). Kept minimal for lab usage.
+        # IS-IS L2 underlay with per-node unique NET and loopback reachability.
+        isis_net = isis_net_from_loopback(loopbacks[node])
         config += (
             "router isis 1\n"
-            f" net 49.0001.{int(asn):04d}.{int(asn):04d}.{int(asn):04d}.00\n"
+            f" net {isis_net}\n"
             " is-type level-2-only\n"
             "!\n"
         )
+        config += "interface Loopback0\n ip router isis 1\n!\n"
         for link in get_node_core_links(node, core_alloc):
             if link["interface"]:
                 config += f"interface {link['interface']}\n ip router isis 1\n!\n"

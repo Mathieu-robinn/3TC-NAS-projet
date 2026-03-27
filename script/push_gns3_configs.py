@@ -39,6 +39,9 @@ IOS_ENABLE_PROMPT_RE = re.compile(rb"[^\r\n]*#\s*\Z")
 IOS_CONFIG_PROMPT_RE = re.compile(rb"[^\r\n]*\([^\)]*config[^\)]*\)#\s*\Z")
 IOS_CONFIRM_RE = re.compile(rb"(?i)\[confirm\]\s*\Z")
 IOS_WRITE_OK_RE = re.compile(rb"(?i)\[ok\]")
+# IOS often reports CLI/runtime failures as lines starting with '%'.
+# Keep this broad so wipe/push never silently continues after an IOS error.
+IOS_ERROR_LINE_RE = re.compile(rb"(?im)^\s*%[^\r\n]*$")
 
 IOS_INIT_DIALOG_RE = re.compile(
     rb"(?is)Would you like to enter the initial configuration dialog\?\s*\[yes/no\]:\s*$"
@@ -52,6 +55,25 @@ def _tail_bytes(b: bytes, n: int = 220) -> str:
         s = repr(b)
     s2 = s.replace("\r", "\\r").replace("\n", "\\n")
     return s2[-n:]
+
+
+def _decode_bytes(b: bytes) -> str:
+    try:
+        return b.decode("utf-8", errors="replace")
+    except Exception:
+        return repr(b)
+
+
+def _assert_no_ios_cli_error(buf: bytes, *, context: str) -> None:
+    """
+    Raise when IOS reports CLI parsing/runtime errors.
+    This prevents "wipe-before" from silently continuing when commands fail.
+    """
+    m = IOS_ERROR_LINE_RE.search(buf)
+    if not m:
+        return
+    msg = _decode_bytes(m.group(0)).strip()
+    raise RuntimeError(f"{context}: {msg}")
 
 
 @dataclass(frozen=True)
@@ -298,6 +320,7 @@ async def push_one(
     *,
     timeout: float,
     delay_line: float,
+    wipe_before: bool,
     write_memory: bool,
     verbose: bool,
 ) -> PushResult:
@@ -314,6 +337,29 @@ async def push_one(
         async with TelnetIOSSession("127.0.0.1", node.port, timeout=timeout, verbose=verbose) as sess:
             await sess.wake()
             await sess.ensure_enable()
+
+            if wipe_before:
+                # Best-effort wipe without reload:
+                # 1) erase startup-config
+                # 2) configure replace nvram:startup-config force
+                # This clears current running config to startup (now empty/default).
+                sess.clear_buffer()
+                sess.sendline("erase startup-config")
+                matched = await sess._expect_any_regex(
+                    (IOS_CONFIRM_RE, IOS_ENABLE_PROMPT_RE),
+                    timeout=timeout,
+                )
+                if matched is IOS_CONFIRM_RE:
+                    sess.clear_buffer()
+                    sess.sendline("")
+                    await sess._expect_regex(IOS_ENABLE_PROMPT_RE, timeout=timeout)
+                _assert_no_ios_cli_error(sess._buf, context="wipe-before erase startup-config failed")
+
+                sess.clear_buffer()
+                sess.sendline("configure replace nvram:startup-config force")
+                await sess._expect_regex(IOS_ENABLE_PROMPT_RE, timeout=max(timeout, 12.0))
+                _assert_no_ios_cli_error(sess._buf, context="wipe-before configure replace failed")
+
             await sess.enter_config()
 
             for ln in lines:
@@ -365,6 +411,11 @@ def main(argv: Sequence[str]) -> int:
     ap.add_argument("--dry-run", action="store_true", help="Print mapping and planned actions without connecting")
     ap.add_argument("--timeout", type=float, default=6.0, help="Telnet/prompt timeout (seconds)")
     ap.add_argument("--delay-line", type=float, default=0.02, help="Delay between config lines (seconds)")
+    ap.add_argument(
+        "--wipe-before",
+        action="store_true",
+        help="Wipe current config before push (erase startup-config + configure replace), no reload",
+    )
     ap.add_argument("--write-memory", action="store_true", help="Run 'write memory' at the end (default: off)")
     ap.add_argument("--no-write", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--verbose", action="store_true", help="Verbose telnet I/O to stderr (debug)")
@@ -425,6 +476,7 @@ def main(argv: Sequence[str]) -> int:
     push_kwargs = {
         "timeout": float(args.timeout),
         "delay_line": float(args.delay_line),
+        "wipe_before": bool(args.wipe_before),
         "write_memory": bool(args.write_memory) and not bool(args.no_write),
         "verbose": bool(args.verbose),
     }

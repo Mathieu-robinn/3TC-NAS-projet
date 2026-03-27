@@ -21,6 +21,7 @@ Automatisation de la generation de configurations Cisco IOS pour un lab MPLS/BGP
 1. Generer les configs a partir de l'intent.
 2. Synchroniser les configs vers GNS3.
 3. Demarrer les routeurs dans GNS3.
+4. (Option) Generer des **modifications a chaud** (diff) et les push en telnet.
 
 ## 1) Generer les configurations
 
@@ -84,3 +85,28 @@ python "script/sync_gns3_startup_configs.py" \
 
 - Le mapping routeur `<name>.cfg` -> startup-config est deduit via le fichier `.gns3` (node_id + dynamips_id).
 - Le script de sync utilise automatiquement le dernier dossier `Configs-YYYYMMDD-HHMMSS` dans `script/Configs`.
+
+## 3) Modifications a chaud (diff -> Modifs-*)
+
+Le script `script/intent_diff_to_modifs.py`:
+- execute d'abord le generateur (`script/script_intent_to_configs.py`) avec l'intent NEW
+- compare les configs OLD vs NEW (par blocs IOS) et genere des **commandes de modification** dans `script/modifs/Modifs-YYYYMMDD-HHMMSS/`
+- emet les suppressions (`no ...` / `default interface ...`) pour eviter le **config ghosting**
+- n'emet jamais de commandes dangereuses (reload / write erase / etc.)
+
+Exemple (depuis la racine du projet):
+
+```bash
+python "script/intent_diff_to_modifs.py" \
+  --old-intent "script/Intent.v4.json" \
+  --new-intent "script/Intent.v4.json" \
+  --only PE1
+```
+
+### Push des modifs en telnet (GNS3 consoles)
+
+Apres generation, pousser un fichier de modifs (ou tout le dossier) via:
+
+```bash
+python "script/push_gns3_configs.py" gns3/projet_gns3_1 "script/modifs/Modifs-YYYYMMDD-HHMMSS" --only PE1
+```

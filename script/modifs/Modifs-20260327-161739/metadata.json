@@ -1,0 +1,22 @@
+{
+  "timestamp": "20260327-161739",
+  "old_intent": "C:\\Users\\ilias\\Documents locaux\\NAS\\3TC-NAS-projet\\script\\Configs\\Configs-20260326-173131\\Intent.v4.json",
+  "new_intent": "C:\\Users\\ilias\\Documents locaux\\NAS\\3TC-NAS-projet\\script\\Intent.v4.NEW.example.json",
+  "old_configs_dir": "C:\\Users\\ilias\\Documents locaux\\NAS\\3TC-NAS-projet\\script\\Configs\\Configs-20260327-161737",
+  "new_configs_dir": "C:\\Users\\ilias\\Documents locaux\\NAS\\3TC-NAS-projet\\script\\Configs\\Configs-20260327-161739",
+  "nodes": [
+    "CE1-1",
+    "CE1-2",
+    "CE2-1",
+    "CE2-2",
+    "CE3-1",
+    "CE3-2",
+    "P1",
+    "P2",
+    "P3",
+    "P4",
+    "PE1",
+    "PE2",
+    "PE3"
+  ]
+}
