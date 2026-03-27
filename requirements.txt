@@ -1,0 +1,6 @@
+#
+# Dépendances Python pour le projet 3TC NAS
+#
+# Tkinter est fourni avec Python. Pour un look moderne, l'interface utilise:
+ttkbootstrap>=1.10.1
+
