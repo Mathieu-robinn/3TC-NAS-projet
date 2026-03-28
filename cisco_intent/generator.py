@@ -235,6 +235,12 @@ def _compute_rd_rt(vpn_services: Dict[str, Any], core_asn: int, vrf_name: str, v
     return rd, rt
 
 
+def _ce_needs_allowas_in(cust: Dict[str, Any]) -> bool:
+    """True si le client a plusieurs sites (même ASN partagé) : le CE doit accepter l'ASN local dans l'AS_PATH."""
+    sites = cust.get("sites") or []
+    return len(sites) > 1
+
+
 def gen_vrf_and_pe_ce(
     node: str,
     customers: List[Dict[str, Any]],
@@ -242,7 +248,7 @@ def gen_vrf_and_pe_ce(
     cust_alloc: Dict[Tuple[str, str, str], Dict[str, Any]],
     core_asn: int,
 ) -> str:
-    """Pour le PE ``node`` : vrf definition, interfaces PE-CE en VRF, voisins eBGP par VRF."""
+    """Pour le PE ``node`` : vrf definition, interfaces PE-CE en VRF, voisins eBGP par VRF (sans as-override)."""
     config = ""
     vrfs = vpn_services.get("vrfs", [])
 
@@ -293,7 +299,6 @@ def gen_vrf_and_pe_ce(
             config += (
                 f"  neighbor {alloc['ce_ip']} remote-as {cust['asn']}\n"
                 f"  neighbor {alloc['ce_ip']} activate\n"
-                f"  neighbor {alloc['ce_ip']} as-override\n"
             )
         config += " exit-address-family\n!\n"
 
@@ -310,7 +315,10 @@ def gen_ce(
     core_asn: int,
     lan_cfg: Dict[str, Any],
 ) -> str:
-    """Configuration complète d'un routeur CE (uplink PE, LAN optionnel, eBGP vers l'AS core)."""
+    """Configuration complète d'un routeur CE (uplink PE, LAN optionnel, eBGP vers l'AS core).
+
+    ``allowas-in`` vers le PE est ajouté seulement si le client a plusieurs sites (même ASN).
+    """
     ce_name = site["ce"]
     pe_name = site["pe"]
     alloc = cust_alloc[(cust["name"], ce_name, pe_name)]
@@ -346,6 +354,8 @@ def gen_ce(
         f" address-family ipv4\n"
         f"  neighbor {alloc['pe_ip']} activate\n"
     )
+    if _ce_needs_allowas_in(cust):
+        config += f"  neighbor {alloc['pe_ip']} allowas-in\n"
 
     advertise = lan_cfg.get("bgp", {}).get("advertise", True)
     method = lan_cfg.get("bgp", {}).get("method", "network_statement")
