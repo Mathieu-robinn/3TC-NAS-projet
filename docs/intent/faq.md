@@ -99,7 +99,7 @@ Ces chemins par défaut sont relatifs à la **racine du dépôt** (`cisco_intent
 ## C’est quoi `reset` par rapport à `sync-startup` ?
 
 - **`sync-startup`** : un fichier **par routeur** (`PE1.cfg`, `PE2.cfg`, …) aligné sur les configs générées.
-- **`reset`** : un **seul** fichier template (**`configs/default/default-conf-C7200.txt`** par défaut) copié **vers chaque** startup Dynamips du projet. Après coup, redémarrer les nœuds dans GNS3 pour charger cette config de base.
+- **`reset`** : un **seul** fichier template (**`configs/default/default-conf-C7200.txt`** par défaut) ; le contenu est personnalisé par nœud : **`%h`** est remplacé par le **nom du routeur** dans le `.gns3` (ex. `hostname PE1`). Puis écriture vers chaque startup Dynamips. Redémarrer les nœuds dans GNS3 pour charger la config.
 
 ## `--push` sur `generate` / `update` vs sous-commande `push` ?
 

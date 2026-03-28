@@ -19,7 +19,8 @@ Correspondance nœud ↔ fichier :
 Pour étendre :
   - Autre hyperviseur : il faudrait un autre mapping que ``DynamipsNode.startup_filename``.
   - ``reset`` : copie un fichier template unique (défaut ``configs/default/default-conf-C7200.txt``)
-    vers chaque startup-config Dynamips, comme ``sync-startup`` sans ``<hostname>.cfg``.
+    vers chaque startup-config Dynamips ; la séquence ``%h`` dans le template est remplacée par le
+    **nom du nœud** GNS3 (ex. ``PE1``), typiquement pour ``hostname …``.
 ================================================================================
 """
 
@@ -238,7 +239,8 @@ def main_reset(argv: list[str]) -> int:
         prog="python -m cisco_intent reset",
         description=(
             "Pour chaque nœud Dynamips du projet GNS3, copie la config par défaut C7200 vers le "
-            "fichier startup sur disque (même logique de chemins que sync-startup)."
+            "fichier startup sur disque (même logique de chemins que sync-startup). "
+            "Dans le template, %h est remplacé par le nom du routeur (champ name du nœud dans le .gns3)."
         ),
     )
     parser.add_argument(
@@ -286,6 +288,8 @@ def main_reset(argv: list[str]) -> int:
     if not tpl.is_file():
         raise FileNotFoundError(f"Fichier template introuvable: {tpl}")
 
+    template_text = tpl.read_text(encoding="utf-8")
+
     dynamips_root = project_root / "project-files" / "dynamips"
     if not dynamips_root.is_dir():
         raise FileNotFoundError(f"Dossier dynamips introuvable: {dynamips_root}")
@@ -306,7 +310,8 @@ def main_reset(argv: list[str]) -> int:
             print(format_row([n.name, n.node_id, str(n.dynamips_id), "DRY_RUN"], widths))
             continue
         dst_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(tpl, dst_cfg)
+        personalized = template_text.replace("%h", n.name)
+        dst_cfg.write_text(personalized, encoding="utf-8", newline="\n")
         copied += 1
         print(format_row([n.name, n.node_id, str(n.dynamips_id), "COPIED"], widths))
 

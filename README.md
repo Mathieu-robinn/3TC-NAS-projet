@@ -95,7 +95,7 @@ python -m cisco_intent sync-startup \
 
 ## 2bis) Reset startup-config (config par defaut C7200)
 
-La sous-commande **`reset`** copie le fichier **`configs/default/default-conf-C7200.txt`** vers le startup-config **de chaque** noeud Dynamips du projet (meme arborescence que `sync-startup`, mais un seul fichier source pour tous les routeurs). Utile pour revenir a une base IOS avant un nouveau lab.
+La sous-commande **`reset`** copie le fichier **`configs/default/default-conf-C7200.txt`** vers le startup-config **de chaque** noeud Dynamips du projet (meme arborescence que `sync-startup`, mais un seul fichier source pour tous les routeurs). Dans le template, **`%h`** est remplace par le **nom du nœud** GNS3 (ex. `PE1`), en general pour la ligne `hostname`. Utile pour revenir a une base IOS avant un nouveau lab.
 
 ```bash
 python -m cisco_intent reset gns3/projet

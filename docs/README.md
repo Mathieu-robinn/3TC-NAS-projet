@@ -39,7 +39,7 @@ python -m cisco_intent --help
 | `update` | OLD = `configs/<name>/live/` (nom = NEW intent) ; NEW dans `staging/` ; modifs dans `backup/modifs/*.zip` |
 | `push <projet_gns3> <dossier_cfg>` | Telnet GNS3 ; sync `staging`→`live` possible si topologie déductible et dossier ≠ `live/` |
 | `sync-startup <projet_gns3>` | Copie les `<name>.cfg` depuis **`--topology <name>`** (`configs/<name>/live/`) **ou** `--configs-dir` vers les startup Dynamips |
-| `reset <projet_gns3>` | Copie **`configs/default/default-conf-C7200.txt`** vers chaque startup Dynamips (option `--template`) |
+| `reset <projet_gns3>` | Copie le template (defaut **`default-conf-C7200.txt`**) vers chaque startup ; **`%h`** est remplace par le nom du nœud GNS3 (`--template` possible) |
 
 Options détaillées : `python -m cisco_intent <sous-commande> -h`.
 
