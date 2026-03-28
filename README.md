@@ -4,15 +4,17 @@ Automatisation de la generation de configurations Cisco IOS pour un lab MPLS/BGP
 
 ## Contenu du depot
 
-- `cisco_intent/` : package Python (generateur, update modifs, push/sync GNS3).
+- `cisco_intent/` : package Python (generateur, update modifs, push/sync GNS3, reset startup).
 - Point d'entree unique : `python -m cisco_intent <sous-commande> ...` (depuis la racine du depot, ou avec `PYTHONPATH` sur la racine).
-- `intent/` : fichiers intent JSON d'exemple (`Intent.v4.json`, etc.).
-- `configs/` (tout en minuscules) regroupe :
-  - `configs/live/` : référence sur disque (au moins un `*.cfg`) ; rempli au premier `generate` sans push, ou **toujours** avec `generate --push` ; mis à jour depuis `staging/` après `update --push` réussi ou après un **`push` manuel** (voir ci-dessous) ; OLD par défaut de `update`
-  - `configs/staging/` : `generate` **sans** `--push` lorsque `live/` contient déjà des `*.cfg` ; aussi jeu NEW de `update`. **Vidé** après copie vers `live/` (`update --push` réussi, ou `push` manuel depuis un dossier autre que `live/` si `staging/` avait des `*.cfg`)
-  - `configs/scratch_old/` : baseline temporaire si `update --old-intent`
-  - `configs/backup/modifs/Modifs-<timestamp>.zip` : historique des modifs incrémentales produites par `update` (seul stockage persistant des snippets ; pas de dossier dédié sous `configs/`)
-  - `configs/backup/full_configs/Configs-<timestamp>.zip` : snapshot zip a chaque generation
+- `intent/` : fichiers intent JSON d'exemple (ex. `intent/topologie1/Intent_*.json`).
+- `configs/` regroupe :
+  - **`configs/<name>/`** — une arborescence **par topologie** ; `<name>` est le champ racine **`name`** de l'intent JSON (identifiant stable, ex. `topologie1`, `topology_1`).
+    - `configs/<name>/live/` : reference sur disque (`*.cfg` + copie d'intent) ; rempli au premier `generate` sans push (si `live/` vide), ou **toujours** avec `generate --push` ; mis à jour depuis `staging/` apres `update --push` reussi ou apres un **`push` manuel** ; OLD par defaut de `update` pour le meme `name`.
+    - `configs/<name>/staging/` : `generate` **sans** `--push` lorsque `live/` contient deja des `*.cfg` ; aussi jeu NEW de `update`. **Vide** apres copie vers `live/`.
+    - `configs/<name>/scratch_old/` : baseline temporaire si `update --old-intent` (scratch lie a la topologie de l'intent OLD).
+    - `configs/<name>/backup/modifs/Modifs-<timestamp>.zip` : historique des modifs incrementales (`update`).
+    - `configs/<name>/backup/full_configs/Configs-<timestamp>.zip` : snapshot zip a chaque generation.
+  - **`configs/default/`** : fichiers de reference hors topologie (ex. **`default-conf-C7200.txt`** utilise par `reset`).
 - `gns3/` : projets GNS3 (ex: `projet/`).
 - `docs/` : documentation du sujet et du format d'intent.
 
@@ -21,73 +23,87 @@ Automatisation de la generation de configurations Cisco IOS pour un lab MPLS/BGP
 - Python 3.10+ (ou version recente compatible).
 - Dependances : `pip install -r requirements.txt` (ou `./dependencies.sh` / `dependencies.bat`).
 - Un projet GNS3 present dans `gns3/<nom_du_projet>/`.
-- Un fichier intent JSON (exemple: `intent/Intent.v4.json`).
+- Un fichier intent JSON avec le champ racine **`name`** (exemple : `intent/topologie1/Intent_isis_rr_redunt.json`).
 
 ## Workflow recommande
 
 1. Generer les configs a partir de l'intent.
-2. Synchroniser les configs vers GNS3.
+2. Synchroniser les configs vers GNS3 (`sync-startup` ou `push`).
 3. Demarrer les routeurs dans GNS3.
 4. (Option) Generer des **modifications a chaud** (`update`) et les push en telnet.
+5. (Option) **Reset** des startup-config Dynamips vers la config par defaut C7200 (`reset`).
 
 ## 1) Generer les configurations
 
-Depuis la racine du projet:
+Depuis la racine du projet (remplacer par ton fichier intent) :
 
 ```bash
-python -m cisco_intent generate intent/Intent.v4.json
+python -m cisco_intent generate intent/topologie1/Intent_isis_rr_redunt.json
 ```
 
-- Si `configs/live/` est **vide** (aucun `*.cfg`) : écriture dans **`configs/live/`**.
-- Si `live/` contient déjà des `*.cfg` : écriture dans **`configs/staging/`** (un message l’indique sur stderr).
+- Le repertoire cible est **`configs/<name>/`** ou `<name>` vient de l'intent.
+- Si **`configs/<name>/live/`** est **vide** (aucun `*.cfg`) : ecriture dans **`live/`**.
+- Si `live/` contient deja des `*.cfg` : ecriture dans **`staging/`** (message sur stderr).
 
-Contenu : fichiers `*.cfg` + copie de l’intent.
+Contenu : fichiers `*.cfg` + copie de l'intent.
 
 ### Option `--push` (configs completes en telnet)
 
-Avec `--push`, la génération va **toujours** dans `configs/live/`, puis telnet. Après succès, `live` est déjà à jour.
+Avec `--push`, la generation va **toujours** dans `configs/<name>/live/`, puis telnet. Apres succes, `live` est deja a jour.
 
 ```bash
-python -m cisco_intent generate intent/Intent.v4.json \
+python -m cisco_intent generate intent/topologie1/Intent_isis_rr_redunt.json \
   --push --gns3-project gns3/projet
 ```
 
 Options utiles : `--push-only PE1,P2`, `--push-dry-run`, `--push-write-memory`, `--push-timeout`, `--push-workers` (voir `python -m cisco_intent generate -h`).
 
-## 2) Synchroniser vers GNS3
+## 2) Synchroniser vers GNS3 (startup sur disque)
 
-La sous-commande `sync-startup` prend un **argument positionnel obligatoire** pour le dossier projet GNS3:
+La sous-commande **`sync-startup`** copie les `<hostname>.cfg` vers les fichiers startup Dynamips. Il faut indiquer la source soit avec **`--topology <name>`** (dossier = `configs/<name>/live/`), soit avec **`--configs-dir`** (chemin explicite).
 
 ```bash
-python -m cisco_intent sync-startup gns3/projet
+python -m cisco_intent sync-startup gns3/projet --topology topologie1
 ```
 
-Par defaut, le programme reconstruit automatiquement:
+Par defaut, le programme deduit le fichier projet :
 
-- `gns3-file` => `<project_root>/<nom_du_dossier>.gns3` (ex: `gns3/projet/projet.gns3`)
+- `<project_root>/<nom_du_dossier>.gns3` (ex: `gns3/projet/projet.gns3`)
 
 ### Options utiles
 
-- Dry-run (affiche sans ecrire):
+- Dry-run :
 
 ```bash
-python -m cisco_intent sync-startup gns3/projet --dry-run
+python -m cisco_intent sync-startup gns3/projet --topology topologie1 --dry-run
 ```
 
-- Continuer meme si certaines configs source manquent:
+- Continuer meme si certaines configs source manquent :
 
 ```bash
-python -m cisco_intent sync-startup gns3/projet --no-strict
+python -m cisco_intent sync-startup gns3/projet --topology topologie1 --no-strict
 ```
 
-- Chemins personnalises : par defaut les `.cfg` sont lus depuis `configs/live/`. Pour un dossier extrait d’une archive ou `configs/staging`, par ex. :
+- Dossier source explicite (archive dezippee, `staging`, etc.) :
 
 ```bash
 python -m cisco_intent sync-startup \
   --gns3-file "gns3/projet/projet.gns3" \
   --project-root "gns3/projet" \
-  --configs-dir "configs/staging"
+  --configs-dir "configs/topologie1/staging"
 ```
+
+## 2bis) Reset startup-config (config par defaut C7200)
+
+La sous-commande **`reset`** copie le fichier **`configs/default/default-conf-C7200.txt`** vers le startup-config **de chaque** noeud Dynamips du projet (meme arborescence que `sync-startup`, mais un seul fichier source pour tous les routeurs). Utile pour revenir a une base IOS avant un nouveau lab.
+
+```bash
+python -m cisco_intent reset gns3/projet
+```
+
+Options : `--gns3-file`, `--template <fichier>` (autre source que le defaut), `--dry-run`. Voir `python -m cisco_intent reset -h`.
+
+Redemarrer les routeurs dans GNS3 pour charger la nouvelle startup.
 
 ## Documentation complementaire
 
@@ -98,44 +114,38 @@ python -m cisco_intent sync-startup \
 ## Notes
 
 - Le mapping routeur `<name>.cfg` -> startup-config est deduit via le fichier `.gns3` (node_id + dynamips_id).
-- La commande `sync-startup` utilise par defaut `configs/live/`. Utilise `--configs-dir` pour une autre source.
-- **`push` manuel** : si le dossier poussé **n’est pas** `configs/live/` (ex. dossier obtenu en dézipant un `backup/modifs/*.zip`, ou `configs/staging`) et que **`configs/staging/`** contient des `*.cfg`, après push réussi copie `staging` → `live` puis vide `staging`.
+- **`push` manuel** : si le dossier pousse **n'est pas** `configs/<topo>/live/` et que **`configs/<topo>/staging/`** contient des `*.cfg`, apres push reussi le code peut copier `staging` -> `live` puis vider `staging` (topologie deduite de l'intent dans le dossier ou du chemin).
 
 ## 3) Modifications a chaud (`update` → backup/modifs)
 
 La sous-commande `update` :
 
-- OLD par defaut : `configs/live/` (sinon `--old-configs-dir` ou `--old-intent`)
-- execute le generateur avec l'intent NEW (sortie dans `configs/staging/`, sans ecraser `live/` avant le push reussi)
-- compare OLD vs NEW (par blocs IOS) et enregistre les **commandes de modification** dans `configs/backup/modifs/Modifs-<timestamp>.zip` (répertoire temporaire le temps du run, supprimé ensuite ; `update --push` lit ce dossier avant destruction)
-- apres `update --push` reussi, `configs/live/` est aligne sur le run NEW (configs completes), pas sur le dossier modifs
-- emet les suppressions (`no ...` / `default interface ...`) pour eviter le **config ghosting**
-- n'emet jamais de commandes dangereuses (reload / write erase / etc.)
+- OLD par defaut : **`configs/<name>/live/`** ou `<name>` est le champ **`name`** de l'intent **NEW** (l'intent copie dans le live doit avoir le meme `name`, sinon erreur ; ou utiliser `--old-configs-dir`).
+- Execute le generateur avec l'intent NEW (sortie dans **`configs/<name>/staging/`**).
+- Compare OLD vs NEW et enregistre les **commandes de modification** dans **`configs/<name>/backup/modifs/Modifs-<timestamp>.zip`**
+- Apres `update --push` reussi, **`configs/<name>/live/`** est aligne sur le run NEW (configs completes).
+- Avec **`--old-intent`** seul : baseline OLD generee dans **`configs/<name_old>/scratch_old/`** (nom lu dans l'intent OLD).
 
-Exemple (depuis la racine du projet):
+Exemple :
 
 ```bash
 python -m cisco_intent update \
-  --old-intent "intent/Intent.v4.json" \
-  --new-intent "intent/Intent.v4.json" \
+  --old-intent "intent/topologie1/Intent_isis_rr_redunt.json" \
+  --new-intent "intent/topologie1/Intent_isis_rr_redunt.json" \
   --only PE1
 ```
 
 ### Push des modifs en telnet (GNS3 consoles)
 
-En une commande : zip `backup/modifs/` puis push telnet depuis le répertoire temporaire (transparent) :
-
 ```bash
 python -m cisco_intent update \
-  --new-intent intent/Intent.v4.NEW.example.json \
+  --new-intent intent/topologie1/Intent_isis_rr_redunt.json \
   --push --gns3-project gns3/projet
 ```
 
-`--only` filtre a la fois les fichiers de modifs et les cibles du push. `--push-only` sert seulement au push si tu veux un sous-ensemble different (rare).
-
 Avec `--dry-run` sur `update`, le push est ignore.
 
-Push **ultérieur** (sans refaire `update`) : dézipper l’archive voulue dans un dossier, puis :
+Push **ultérieur** : dezipper l'archive voulue, puis :
 
 ```bash
 python -m cisco_intent push gns3/projet "chemin/vers/dossier_dezip" --only PE1
@@ -149,4 +159,5 @@ python -m cisco_intent generate -h
 python -m cisco_intent update -h
 python -m cisco_intent push -h
 python -m cisco_intent sync-startup -h
+python -m cisco_intent reset -h
 ```

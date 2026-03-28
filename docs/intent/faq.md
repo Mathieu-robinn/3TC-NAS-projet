@@ -83,23 +83,29 @@ Méthodes d’annonce BGP:
 
 ## Où sont les fichiers intent et les sorties ?
 
-- **Intents** : répertoire [`intent/`](../../intent/) à la racine du dépôt (ex. `Intent.v4.json`). Tu peux ajouter `intent/examples/` pour des variantes locales.
-- **Configs complètes** : `generate` sans `--push` → `configs/live/` si celui-ci n’a encore aucun `*.cfg`, sinon `configs/staging/` ; avec `--push` → toujours `live/`. Zip `configs/backup/full_configs/Configs-<timestamp>.zip` à chaque génération.
-- **Modifs (`update`)** : archive `configs/backup/modifs/Modifs-<timestamp>.zip` uniquement (pas de dossier persistant ; push ultérieur = dézipper puis `push <dossier>`).
-- **configs/live/** : dernier jeu appliqué (après `generate --push` / `update --push` réussi) ; OLD par défaut pour `update`.
+- **Intents** : répertoire [`intent/`](../../intent/) à la racine du dépôt (ex. `intent/topologie1/Intent_*.json`). Chaque intent doit avoir un champ racine **`name`** (identifiant de topologie).
+- **Configs complètes** : tout est sous **`configs/<name>/`** où `<name>` vient de l’intent. `generate` sans `--push` → **`configs/<name>/live/`** si aucun `*.cfg` dans ce `live/`, sinon **`configs/<name>/staging/`** ; avec `--push` → toujours ce `live/`. Zip **`configs/<name>/backup/full_configs/Configs-<timestamp>.zip`** à chaque génération.
+- **Modifs (`update`)** : archive **`configs/<name>/backup/modifs/Modifs-<timestamp>.zip`** (push ultérieur = dézipper puis `push <dossier>`).
+- **`configs/<name>/live/`** : dernier jeu appliqué pour cette topologie ; OLD par défaut pour `update` lorsque l’intent NEW a le même `name` (sinon `--old-configs-dir`).
+- **Reset lab** : **`configs/default/default-conf-C7200.txt`** — copié vers chaque startup Dynamips par la commande **`reset`** (hors arborescence par topologie).
 
 Ces chemins par défaut sont relatifs à la **racine du dépôt** (`cisco_intent.paths.PROJECT_ROOT`).
 
 ## Différence entre `push` (telnet) et `sync-startup` ?
 
 - **`push`** : envoie le contenu des `.cfg` sur les **consoles telnet** GNS3 — les VMs/routeurs doivent être **déjà démarrés**. Adapté au **chaud** (y compris les fichiers de **modifs** produits par `update`).
-- **`sync-startup`** : copie les `.cfg` depuis **`configs/live/`** par défaut (ou `--configs-dir`, ex. dossier extrait d’un zip ou `configs/staging`) vers les **startup-config** Dynamips — utile pour un **prochain démarrage à froid** dans GNS3.
+- **`sync-startup`** : copie les `<hostname>.cfg` depuis **`configs/<name>/live/`** si tu passes **`--topology <name>`**, ou depuis **`--configs-dir`** (ex. dossier extrait d’un zip ou `configs/<name>/staging`) vers les **startup-config** Dynamips — utile pour un **prochain démarrage à froid** dans GNS3.
+
+## C’est quoi `reset` par rapport à `sync-startup` ?
+
+- **`sync-startup`** : un fichier **par routeur** (`PE1.cfg`, `PE2.cfg`, …) aligné sur les configs générées.
+- **`reset`** : un **seul** fichier template (**`configs/default/default-conf-C7200.txt`** par défaut) copié **vers chaque** startup Dynamips du projet. Après coup, redémarrer les nœuds dans GNS3 pour charger cette config de base.
 
 ## `--push` sur `generate` / `update` vs sous-commande `push` ?
 
-- **`generate … --push --gns3-project DIR`** : génère toujours dans `live/` puis push ; `live` reste la référence.
-- **`push` (manuel)** : après succès, si le dossier poussé n’est pas `live/` et que `staging/` contient des `*.cfg`, copie `staging` → `live` puis vide `staging`.
-- **`update … --push --gns3-project DIR`** : pousse les snippets depuis un répertoire temporaire (après création du zip) ; si le push réussit, **`configs/live/`** est rempli depuis **`configs/staging/`** (NEW complet), pas depuis les seules modifs.
+- **`generate … --push --gns3-project DIR`** : génère toujours dans **`configs/<name>/live/`** puis push ; ce `live` reste la référence pour la topologie `<name>`.
+- **`push` (manuel)** : après succès, si le dossier poussé n’est pas le `live/` de la topologie concernée et que **`staging/`** de cette topologie contient des `*.cfg`, copie `staging` → `live` puis vide `staging` (topologie déduite de l’intent ou du chemin).
+- **`update … --push --gns3-project DIR`** : pousse les snippets depuis un répertoire temporaire (après création du zip) ; si le push réussit, **`configs/<name>/live/`** est rempli depuis **`staging/`** (NEW complet), pas depuis les seules modifs.
 - **`push PROJET DOSSIER_CFG`** : équivalent explicite quand tu choisis toi-même le dossier de `.cfg`.
 
 Options communes : `--push-only`, `--push-dry-run`, `--push-write-memory`, etc. (`python -m cisco_intent generate -h` / `update -h`).

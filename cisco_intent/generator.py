@@ -13,7 +13,7 @@ Pipeline principal (voir ``generate_configs``) :
 
 Retour :
   ``generate_configs`` renvoie ``(code_de_sortie, out_dir)`` : dossier d'écriture
-  (``configs/live/`` par défaut, ou ``output_dir`` pour ``update``), sinon ``None``.
+  (``configs/<name>/live/`` par défaut selon l'intent, ou ``output_dir`` pour ``update``), sinon ``None``.
   La CLI ``generate --push`` passe ce dossier à ``gns3_push.run_push``.
 
 Organisation du fichier :
@@ -52,6 +52,7 @@ from cisco_intent.intent import (
     load_intent,
     normalize_core_links,
     normalize_intent,
+    topology_name_from_intent,
     validate_intent,
 )
 from cisco_intent.backup_zip import zip_run_dir
@@ -440,28 +441,32 @@ def gen_core_router(
 def generate_configs(
     intent_path: Path,
     *,
+    intent: Optional[Dict[str, Any]] = None,
     only_nodes: Optional[Set[str]] = None,
     fill_from_run_dir: Optional[Path] = None,
     output_dir: Optional[Path] = None,
 ) -> Tuple[int, Optional[Path]]:
     """
-    Écrit les .cfg dans ``output_dir`` si fourni, sinon dans ``configs/live/`` (voir la CLI ``generate`` :
-    sans ``--push``, ``live/`` vide → ``live/`` ; sinon souvent ``staging/``).
+    Écrit les .cfg dans ``output_dir`` si fourni, sinon dans ``configs/<name>/live/`` (``name`` = intent).
 
-    ``update`` passe ``staging_dir()`` (ou ``scratch_old``) explicitement.
+    Si ``intent`` est fourni (dict déjà validé, ex. par ``load_validate_intent``), évite un second chargement.
+
+    ``update`` passe ``staging_dir(topology)`` (ou ``scratch_old``) explicitement.
 
     Si ``only_nodes`` et ``fill_from_run_dir`` sont fournis (cas ``update --only``) :
     seuls les nœuds listés sont régénérés ; pour les autres, on copie
     ``<nom>.cfg`` depuis ``fill_from_run_dir`` lorsqu'il existe.
 
-    Un zip d'archive est ajouté sous ``configs/backup/full_configs/Configs-<timestamp>.zip``.
+    Un zip d'archive est ajouté sous ``configs/<topology>/backup/full_configs/Configs-<timestamp>.zip``.
 
     Retourne (code_de_sortie, out_dir) : out_dir est le dossier cible si succès, sinon None.
     """
     intent_path = intent_path.resolve()
     try:
-        intent = normalize_intent(load_intent(intent_path))
-        validate_intent(intent)
+        if intent is None:
+            intent = normalize_intent(load_intent(intent_path))
+            validate_intent(intent)
+        topology = topology_name_from_intent(intent)
 
         if only_nodes is not None:
             if fill_from_run_dir is None:
@@ -475,7 +480,7 @@ def generate_configs(
         customers = intent.get("customers", [])
         vpn = intent.get("vpn_services", {})
 
-        out_base = output_dir if output_dir is not None else live_dir()
+        out_base = output_dir if output_dir is not None else live_dir(topology)
         run_dir = prepare_dir_for_generation(out_base)
         shutil.copy2(intent_path, run_dir / intent_path.name)
 
@@ -529,7 +534,7 @@ def generate_configs(
 
         print(f"\nTerminé. Configs et backup intent dans {run_dir}")
         try:
-            zip_dest = backup_full_configs_dir() / f"Configs-{configs_backup_stamp()}.zip"
+            zip_dest = backup_full_configs_dir(topology) / f"Configs-{configs_backup_stamp()}.zip"
             zip_run_dir(run_dir, zip_dest)
             print(f"[ZIP] {zip_dest}")
         except OSError as e:

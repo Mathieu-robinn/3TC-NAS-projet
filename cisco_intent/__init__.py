@@ -12,7 +12,7 @@ Pour un débutant :
   - ``__version__`` sert au suivi de version si tu documentes un lab ou publies le package.
 
 Ordre de lecture conseillé pour comprendre le flux complet :
-  1. paths       — configs/ (live, staging, backup), etc.
+  1. paths       — configs/<topology>/ (live, staging, backup), etc.
   2. intent      — charger, normaliser, valider le JSON
   3. allocation  — calculer les adresses IP (loopbacks, liens, clients, LAN)
   4. generator   — produire les fichiers ``<nom>.cfg``

@@ -6,30 +6,31 @@ cli.py — Interface en ligne de commande (router des sous-commandes)
 
 Rôle :
   C'est le « tableau de bord » : selon le premier argument (generate, update, push,
-  sync-startup), on importe le module concerné et on lui passe le reste des arguments.
+  sync-startup, reset), on importe le module concerné et on lui passe le reste des arguments.
 
 Pourquoi des imports à l'intérieur des ``if cmd == ...`` ?
   Accélère le démarrage : par exemple ``python -m cisco_intent push`` n'importe pas
   le générateur tant que tu ne lances pas ``generate``.
 
 Flux ``generate`` :
-  - Sans ``--push`` : écrit dans ``configs/live/`` si celui-ci est vide (aucun ``*.cfg``),
-    sinon dans ``configs/staging/``.
-  - Avec ``--push`` : écrit toujours dans ``live/``, puis ``run_push`` ; après succès
-    (sans ``--push-dry-run``), ``sync`` depuis le dossier poussé (souvent ``live`` déjà à jour).
+  - Charge l'intent (champ racine ``name`` = topologie). Sans ``--push`` : écrit dans
+    ``configs/<name>/live/`` si vide (aucun ``*.cfg``), sinon ``configs/<name>/staging/``.
+  - Avec ``--push`` : écrit toujours dans ``live/`` de cette topologie, puis ``run_push`` ;
+    après succès (sans ``--push-dry-run``), ``sync`` depuis le dossier poussé.
 
 Pour étendre :
   Ajoute un ``if cmd == "ma_commande":`` qui parse ``rest`` avec ``argparse`` ou
   délègue à une fonction ``main`` d'un nouveau module.
 
 Liens : ``generator.generate_configs``, ``config_update.main``, ``gns3_push.run_push``,
-         ``gns3_sync.main``.
+         ``gns3_sync.main``, ``gns3_sync.main_reset``.
 ================================================================================
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -46,6 +47,7 @@ Commands:
   update ...               Mise à jour incrémentale (intent) ; voir: python -m cisco_intent update -h
   push ...                 Push telnet GNS3 ; voir: python -m cisco_intent push -h
   sync-startup ...         Copie configs -> startup Dynamips ; voir: python -m cisco_intent sync-startup -h
+  reset <projet_gns3>      Config par défaut C7200 -> startup Dynamips ; voir: python -m cisco_intent reset -h
 """
     )
 
@@ -57,7 +59,7 @@ def _resolve_cli_path(p: Path) -> Path:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """
-    Point d'entrée CLI : route vers ``generate``, ``update``, ``push`` ou ``sync-startup``.
+    Point d'entrée CLI : route vers ``generate``, ``update``, ``push``, ``sync-startup`` ou ``reset``.
 
     Retourne un code de sortie entier (0 succès, 2 aide/erreur d'usage, autres codes selon sous-commande).
     """
@@ -72,6 +74,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if cmd == "generate":
         from cisco_intent.generator import generate_configs
         from cisco_intent.gns3_push import add_push_cli_arguments, run_push
+        from cisco_intent.intent import load_validate_intent, topology_name_from_intent
         from cisco_intent.paths import live_dir_has_cfg_files, staging_dir
 
         p = argparse.ArgumentParser(prog="python -m cisco_intent generate")
@@ -87,25 +90,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.push and args.gns3_project is None:
             p.error("--gns3-project requis avec --push")
 
+        intent_path = _resolve_cli_path(args.intent)
+        try:
+            intent_data = load_validate_intent(intent_path)
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            print(f"Erreur intent: {e}", file=sys.stderr)
+            return 1
+        topology = topology_name_from_intent(intent_data)
+
         if args.push:
             gen_output_dir = None
-        elif live_dir_has_cfg_files():
-            gen_output_dir = staging_dir()
+        elif live_dir_has_cfg_files(topology):
+            gen_output_dir = staging_dir(topology)
         else:
             gen_output_dir = None
 
-        rc, run_dir = generate_configs(args.intent, output_dir=gen_output_dir)
+        rc, run_dir = generate_configs(args.intent, intent=intent_data, output_dir=gen_output_dir)
         if rc != 0:
             return rc
         if not args.push:
             if (
                 gen_output_dir is not None
                 and run_dir is not None
-                and run_dir.resolve() == staging_dir().resolve()
+                and run_dir.resolve() == staging_dir(topology).resolve()
             ):
                 print(
-                    "[INFO] configs/live/ contient déjà des .cfg : "
-                    "génération écrite dans configs/staging/ (push manuel ou generate --push pour mettre live à jour).",
+                    f"[INFO] configs/{topology}/live/ contient déjà des .cfg : "
+                    f"génération écrite dans configs/{topology}/staging/ "
+                    "(push manuel ou generate --push pour mettre live à jour).",
                     file=sys.stderr,
                 )
             return 0
@@ -129,10 +141,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         if prc == 0 and not args.push_dry_run:
             try:
-                sync_live_from_run(run_dir)
-                print(f"[INFO] configs/live/ mis à jour depuis {run_dir}")
+                sync_live_from_run(run_dir, topology)
+                print(f"[INFO] configs/{topology}/live/ mis à jour depuis {run_dir}")
             except OSError as e:
-                print(f"[WARN] sync configs/live/: {e}", file=sys.stderr)
+                print(f"[WARN] sync configs/{topology}/live/: {e}", file=sys.stderr)
         return prc
 
     if cmd == "update":
@@ -149,6 +161,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from cisco_intent.gns3_sync import main as sync_main
 
         return sync_main(rest)
+
+    if cmd == "reset":
+        from cisco_intent.gns3_sync import main_reset
+
+        try:
+            return main_reset(rest)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as e:
+            print(f"Erreur: {e}", file=sys.stderr)
+            return 1
 
     print(f"Commande inconnue: {cmd!r}", file=sys.stderr)
     _print_global_help()

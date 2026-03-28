@@ -13,11 +13,13 @@ Différence avec ``gns3_push`` :
 
 Correspondance nœud ↔ fichier :
   Le fichier ``.gns3`` liste les nœuds Dynamips avec ``name``, ``node_id`` et
-  ``properties.dynamips_id``. Le nom du routeur (ex. PE1) sert à trouver ``PE1.cfg``
-  dans ``live/`` par défaut (dernier état appliqué), ou dans un dossier explicite via ``--configs-dir``.
+  ``properties.dynamips_id``.   Le nom du routeur (ex. PE1) sert à trouver ``PE1.cfg`` dans ``configs/<topology>/live/`` (via
+  ``--topology``) ou dans un dossier explicite via ``--configs-dir``.
 
 Pour étendre :
   - Autre hyperviseur : il faudrait un autre mapping que ``DynamipsNode.startup_filename``.
+  - ``reset`` : copie un fichier template unique (défaut ``configs/default/default-conf-C7200.txt``)
+    vers chaque startup-config Dynamips, comme ``sync-startup`` sans ``<hostname>.cfg``.
 ================================================================================
 """
 
@@ -31,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from cisco_intent.paths import live_dir
+from cisco_intent.paths import default_c7200_startup_template, live_dir
 
 
 @dataclass(frozen=True)
@@ -86,7 +88,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Analyse un projet GNS3 (.gns3) pour lier node_id <-> name, puis copie les <name>.cfg "
-            "depuis configs/live/ par défaut (ou --configs-dir) vers le startup-config Dynamips."
+            "depuis configs/<topology>/live/ (--topology) ou --configs-dir vers le startup-config Dynamips."
         )
     )
     parser.add_argument(
@@ -113,13 +115,22 @@ def main(argv: list[str]) -> int:
         ),
     )
     parser.add_argument(
+        "--topology",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Identifiant de topologie (champ « name » de l'intent) : source = configs/<NAME>/live/. "
+            "Requis si --configs-dir est omis."
+        ),
+    )
+    parser.add_argument(
         "--configs-dir",
         type=Path,
         default=None,
         metavar="DIR",
         help=(
-            "Dossier contenant directement les <hostname>.cfg (défaut: configs/live). "
-            "Ex.: dossier extrait d'une archive backup/full_configs ou configs/staging."
+            "Dossier contenant directement les <hostname>.cfg. "
+            "Ex.: dossier extrait d'une archive backup/full_configs ou configs/<NAME>/staging."
         ),
     )
     parser.add_argument(
@@ -133,6 +144,9 @@ def main(argv: list[str]) -> int:
         help="Continue même si certaines configs sources manquent (skip). Par défaut, stop à la première erreur.",
     )
     args = parser.parse_args(argv)
+
+    if args.configs_dir is None and args.topology is None:
+        parser.error("Fournis --topology <name> (configs/<name>/live/) ou --configs-dir <chemin>.")
 
     # Détermination de la racine du projet GNS3
     positional_root = Path(args.project_root)
@@ -148,7 +162,8 @@ def main(argv: list[str]) -> int:
         cd = args.configs_dir
         configs_source = cd.resolve() if cd.is_absolute() else (Path.cwd() / cd).resolve()
     else:
-        configs_source = live_dir()
+        assert args.topology is not None
+        configs_source = live_dir(args.topology)
     strict = not args.no_strict
 
     gns3_json = _load_json(gns3_file)
@@ -210,6 +225,96 @@ def main(argv: list[str]) -> int:
         for e in errors:
             print(f"- {e}")
         return 2
+
+    return 0
+
+
+def main_reset(argv: list[str]) -> int:
+    """
+    Sous-commande ``reset`` : copie le template IOS par défaut vers chaque startup Dynamips
+    du projet (même arborescence ``project-files/dynamips/...`` que ``sync-startup``).
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m cisco_intent reset",
+        description=(
+            "Pour chaque nœud Dynamips du projet GNS3, copie la config par défaut C7200 vers le "
+            "fichier startup sur disque (même logique de chemins que sync-startup)."
+        ),
+    )
+    parser.add_argument(
+        "project_root",
+        help=(
+            "Racine du projet GNS3, par ex. gns3/projet_gns3_1. "
+            "Le fichier .gns3 est <project_root>/<nom_du_dossier>.gns3 sauf si --gns3-file."
+        ),
+    )
+    parser.add_argument(
+        "--gns3-file",
+        default=None,
+        help="Chemin vers le fichier .gns3 (relatif au répertoire courant ou absolu).",
+    )
+    parser.add_argument(
+        "--template",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Fichier source (défaut : configs/default/default-conf-C7200.txt à la racine du dépôt).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="N'écrit rien, affiche seulement les copies qui seraient effectuées.",
+    )
+    args = parser.parse_args(argv)
+
+    project_root = Path(args.project_root)
+    if args.gns3_file is not None:
+        gns3_file = Path(args.gns3_file)
+    else:
+        gns3_file = project_root / f"{project_root.name}.gns3"
+
+    if args.template is not None:
+        tpl = args.template.resolve() if args.template.is_absolute() else (Path.cwd() / args.template).resolve()
+    else:
+        tpl = default_c7200_startup_template().resolve()
+
+    gns3_json = _load_json(gns3_file)
+    nodes = sorted(iter_dynamips_nodes(gns3_json), key=lambda n: n.name)
+    if not nodes:
+        raise RuntimeError("Aucun node dynamips trouvé dans le fichier .gns3")
+
+    if not tpl.is_file():
+        raise FileNotFoundError(f"Fichier template introuvable: {tpl}")
+
+    dynamips_root = project_root / "project-files" / "dynamips"
+    if not dynamips_root.is_dir():
+        raise FileNotFoundError(f"Dossier dynamips introuvable: {dynamips_root}")
+
+    widths = [18, 36, 10, 10]
+    print(f"Fichier .gns3: {gns3_file}")
+    print(f"Template source: {tpl}")
+    print(f"Dossier dynamips: {dynamips_root}")
+    print("")
+    print(format_row(["name", "node_id", "dyn_id", "status"], widths))
+    print(format_row(["-" * 4, "-" * 7, "-" * 6, "-" * 6], widths))
+
+    copied = 0
+    for n in nodes:
+        dst_dir = dynamips_root / n.node_id / "configs"
+        dst_cfg = dst_dir / n.startup_filename
+        if args.dry_run:
+            print(format_row([n.name, n.node_id, str(n.dynamips_id), "DRY_RUN"], widths))
+            continue
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(tpl, dst_cfg)
+        copied += 1
+        print(format_row([n.name, n.node_id, str(n.dynamips_id), "COPIED"], widths))
+
+    print("")
+    if args.dry_run:
+        print(f"Dry-run terminé. {len(nodes)} nodes analysés.")
+    else:
+        print(f"Reset terminé. {copied} startup-config écrits.")
 
     return 0
 

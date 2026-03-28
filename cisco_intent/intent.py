@@ -24,8 +24,13 @@ Pour étendre :
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
+# Identifiant de topologie : dossier sous configs/<name>/ (live, staging, backup, …)
+_TOPOLOGY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_TOPOLOGY_NAME_MAX_LEN = 64
 
 
 def load_intent(path: Path) -> Any:
@@ -77,6 +82,21 @@ def normalize_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(json.dumps(intent))
 
 
+def load_validate_intent(path: Path) -> Dict[str, Any]:
+    """Charge un fichier JSON, normalise et valide ; retourne le dict intent."""
+    intent = normalize_intent(load_intent(path))
+    validate_intent(intent)
+    return intent
+
+
+def topology_name_from_intent(intent: Dict[str, Any]) -> str:
+    """
+    Nom de topologie (champ racine ``name``). À utiliser après ``validate_intent``
+    ou ``load_validate_intent``.
+    """
+    return str(intent["name"])
+
+
 def get_all_nodes(as_data: Dict[str, Any]) -> List[str]:
     """Liste les noms de tous les nœuds de l'AS (clé ``nodes``)."""
     nodes = as_data.get("nodes")
@@ -99,6 +119,18 @@ def validate_intent(intent: Dict[str, Any]) -> None:
     ``seen_interfaces`` : évite deux fois la même interface sur un même routeur (core + CE-PE).
     """
     errors: List[str] = []
+
+    name = intent.get("name")
+    if name is None:
+        errors.append("Champ « name » manquant à la racine (identifiant de topologie, ex. topologie_1)")
+    elif not isinstance(name, str):
+        errors.append("Champ « name » doit être une chaîne")
+    elif not (1 <= len(name) <= _TOPOLOGY_NAME_MAX_LEN):
+        errors.append(f"Champ « name » : longueur entre 1 et {_TOPOLOGY_NAME_MAX_LEN} caractères")
+    elif not _TOPOLOGY_NAME_RE.match(name):
+        errors.append(
+            "Champ « name » : uniquement lettres, chiffres, tirets et underscores (ex. topologie_1)"
+        )
 
     if "lan" not in intent:
         errors.append("Champ « lan » manquant à la racine")

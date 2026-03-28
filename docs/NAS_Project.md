@@ -17,7 +17,7 @@ IPv4 :’)
 
 ### Repository automation (outillage du dépôt)
 
-The repo ships a Python package **`cisco_intent`** driven by **`python -m cisco_intent`** (generate full configs from JSON intent, **update** for incremental IOS snippets, telnet **push**, and **sync-startup** for Dynamips files). Paths default to repo root (`intent/`, `configs/` with `live/`, `staging/`, `backup/` incl. `backup/modifs/` zip archives for incremental updates, etc.). See **[`docs/README.md`](README.md)** (French hub) and the root **`README.md`** for command examples.
+The repo ships a Python package **`cisco_intent`** driven by **`python -m cisco_intent`** (generate full configs from JSON intent, **update** for incremental IOS snippets, telnet **push**, **sync-startup** for Dynamips startup files on disk, and **reset** to copy a default C7200 template to every Dynamips startup). Outputs live under **`configs/<topology_name>/`** (`live/`, `staging/`, `backup/` including `backup/modifs/` zip archives), where `topology_name` is the root **`name`** field in the intent JSON. See **[`docs/README.md`](README.md)** (French hub) and the root **`README.md`** for command examples.
 
 ---
 

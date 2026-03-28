@@ -1,14 +1,14 @@
 # Exemples d’intents (v4.0) + recettes
 
-Les JSON **full-mesh** et **dual RR** décrits ci-dessous ne sont **pas** fournis dans le dépôt par défaut : tu peux les créer sous `intent/examples/` (à créer si besoin) ou appliquer les recettes à `intent/Intent.v4.json`. Les intents livrés se trouvent dans [`intent/`](../../intent/) (ex. `Intent.v4.json`, `Intent.v4.NEW.example.json`).
+Les JSON **full-mesh** et **dual RR** décrits ci-dessous ne sont **pas** fournis dans le dépôt par défaut : tu peux les créer sous `intent/examples/` (à créer si besoin) ou appliquer les recettes à un intent existant. Les intents livrés se trouvent dans [`intent/`](../../intent/) (ex. [`intent/topologie1/Intent_isis_rr_redunt.json`](../../intent/topologie1/Intent_isis_rr_redunt.json)) ; chaque fichier doit avoir un champ racine **`name`** (dossier cible `configs/<name>/`).
 
 Ce document propose des variantes et des **recettes** pour modifier un intent sans tout réécrire. Après modification, valide en régénérant :
 
 ```bash
-python -m cisco_intent generate intent/Intent.v4.json
+python -m cisco_intent generate intent/topologie1/Intent_isis_rr_redunt.json
 ```
 
-(Remplace le chemin par ton fichier, ex. `intent/examples/Intent_full_mesh.json` si tu l’as ajouté.)
+(Remplace le chemin par ton fichier, ex. `intent/examples/Intent_full_mesh.json` si tu l’as ajouté — en y ajoutant aussi `"name": "..."`.)
 
 ## Exemple 1 — iBGP full-mesh
 
@@ -195,6 +195,6 @@ et `links[].mpls`.
 Après toute recette appliquée à un fichier sous `intent/` :
 
 ```bash
-python -m cisco_intent generate intent/Intent.v4.json
+python -m cisco_intent generate intent/topologie1/Intent_isis_rr_redunt.json
 ```
 

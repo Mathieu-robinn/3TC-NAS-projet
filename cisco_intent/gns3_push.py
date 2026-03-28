@@ -27,11 +27,11 @@ Réutilisation :
 
 Usage CLI direct :
   ``python -m cisco_intent push <dossier_projet_gns3> <dossier_cfg> [options]``
-  Après un push réussi, si le dossier poussé n'est pas ``configs/live/`` et que
-  ``configs/staging/`` contient des ``*.cfg``, ceux-ci sont recopiés dans ``live/`` puis ``staging/`` est vidé.
+  Après un push réussi, si le dossier poussé n'est pas ``configs/<topo>/live/`` (topo déduit de l'intent
+  ou du chemin) et que ``configs/<topo>/staging/`` contient des ``*.cfg``, recopie vers ``live/`` puis vide ``staging/``.
 
 Exemple :
-  ``python -m cisco_intent push gns3/projet_gns3_1 configs/live --only PE1,P1 --write-memory``
+  ``python -m cisco_intent push gns3/projet_gns3_1 configs/topologie1/live --only PE1,P1 --write-memory``
 ================================================================================
 """
 
@@ -47,6 +47,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+_INTENT_FILE_RE_PUSH = re.compile(r"^Intent.*\.json$", re.IGNORECASE)
 
 
 try:
@@ -679,6 +681,29 @@ def add_push_cli_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def infer_topology_from_cfg_dir_for_sync(cfg_dir: Path) -> Optional[str]:
+    """
+    Topologie pour sync staging→live : ``name`` du premier ``Intent*.json`` valide dans le dossier,
+    sinon heuristique ``.../configs/<topology>/live|staging``.
+    """
+    cfg_dir = cfg_dir.resolve()
+    intent_paths = sorted(
+        [p for p in cfg_dir.iterdir() if p.is_file() and _INTENT_FILE_RE_PUSH.match(p.name)],
+        key=lambda p: p.name.lower(),
+    )
+    for p in intent_paths:
+        try:
+            from cisco_intent.intent import load_validate_intent, topology_name_from_intent
+
+            data = load_validate_intent(p)
+            return topology_name_from_intent(data)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    from cisco_intent.paths import infer_topology_from_configs_path
+
+    return infer_topology_from_configs_path(cfg_dir)
+
+
 def main(argv: Sequence[str]) -> int:
     """Sous-commande ``push`` : parse les arguments puis appelle ``run_push``."""
     ap = argparse.ArgumentParser(description="Push <name>.cfg configs into GNS3 nodes over telnet.")
@@ -720,13 +745,18 @@ def main(argv: Sequence[str]) -> int:
             sync_live_from_run,
         )
 
-        if cfg_dir.resolve() != live_dir().resolve() and staging_dir_has_cfg_files():
-            try:
-                sync_live_from_run(staging_dir())
-                prepare_dir_for_generation(staging_dir())
-                print("[INFO] configs/live/ mis à jour depuis configs/staging/ (après push manuel)")
-            except OSError as e:
-                _eprint(f"[WARN] sync staging→live: {e}")
+        topology = infer_topology_from_cfg_dir_for_sync(cfg_dir)
+        if topology is not None:
+            if cfg_dir.resolve() != live_dir(topology).resolve() and staging_dir_has_cfg_files(topology):
+                try:
+                    sync_live_from_run(staging_dir(topology), topology)
+                    prepare_dir_for_generation(staging_dir(topology))
+                    print(
+                        f"[INFO] configs/{topology}/live/ mis à jour depuis configs/{topology}/staging/ "
+                        "(après push manuel)"
+                    )
+                except OSError as e:
+                    _eprint(f"[WARN] sync staging→live: {e}")
     return prc
 
 

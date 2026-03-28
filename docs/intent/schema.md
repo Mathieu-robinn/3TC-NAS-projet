@@ -8,10 +8,11 @@ Le schéma ci-dessous est consommé par le générateur (`cisco_intent.generator
 
 | Commande | Effet |
 |----------|--------|
-| `python -m cisco_intent generate <intent.json>` | `live/` si vide (sans `*.cfg`), sinon `staging/` ; avec `--push` toujours `live/` + zip dans `configs/backup/full_configs/` |
-| `python -m cisco_intent update --new-intent …` | OLD = `configs/live/` par défaut ; NEW dans `configs/staging/` ; modifs archivées dans `configs/backup/modifs/Modifs-*.zip` |
+| `python -m cisco_intent generate <intent.json>` | Écrit sous **`configs/<name>/`** (`<name>` = champ racine `name`) : `live/` si vide (sans `*.cfg`), sinon `staging/` ; avec `--push` toujours `live/` + zip dans `configs/<name>/backup/full_configs/` |
+| `python -m cisco_intent update --new-intent …` | OLD = **`configs/<name>/live/`** par défaut (même `name` que le NEW) ; NEW dans **`configs/<name>/staging/`** ; modifs dans **`configs/<name>/backup/modifs/Modifs-*.zip`** |
 | `python -m cisco_intent push <projet> <dossier_cfg>` | Push **telnet** des `.cfg` vers des routeurs **déjà démarrés** dans GNS3 |
-| `python -m cisco_intent sync-startup <projet>` | Copie les `.cfg` depuis **`configs/live/`** (ou `--configs-dir`) vers les **startup-config** Dynamips |
+| `python -m cisco_intent sync-startup <projet> --topology <name>` | Copie les `<hostname>.cfg` depuis **`configs/<name>/live/`** (ou **`--configs-dir`**) vers les **startup-config** Dynamips |
+| `python -m cisco_intent reset <projet>` | Copie **`configs/default/default-conf-C7200.txt`** (ou **`--template`**) vers **chaque** startup Dynamips du projet |
 
 Options **`--push`** et **`--gns3-project`** sur `generate` et `update` enchaînent le push telnet après succès (voir `python -m cisco_intent generate -h` / `update -h`). Les chemins par défaut sont définis dans `cisco_intent.paths` (`PROJECT_ROOT`).
 
@@ -22,6 +23,7 @@ Structure haut niveau:
 ```json
 {
   "intent_version": "4.0",
+  "name": "topologie1",
   "addressing": { ... },
   "autonomous_systems": { ... },
   "customers": [ ... ],
@@ -30,6 +32,14 @@ Structure haut niveau:
   "lan": { ... }
 }
 ```
+
+## `name` (topologie)
+
+- **Type**: string
+- **Requis**: **oui**
+- **Format**: 1 à 64 caractères ; uniquement lettres, chiffres, tirets bas `_` et tirets `-` (ex. `topologie1`, `topology_1`).
+
+Identifiant de la topologie : tous les fichiers générés et les dossiers **`live/`**, **`staging/`**, **`backup/`**, **`scratch_old/`** vivent sous **`configs/<name>/`** à la racine du dépôt. La CLI `generate` / `update` lit ce champ pour choisir les chemins ; `sync-startup` utilise **`--topology <name>`** pour pointer vers **`configs/<name>/live/`**.
 
 ## `intent_version`
 

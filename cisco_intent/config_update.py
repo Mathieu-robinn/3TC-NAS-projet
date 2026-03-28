@@ -11,11 +11,12 @@ Idée :
   l'état NEW (``no ...``, nouvelles interfaces, etc.).
 
 Flux typique :
-  1. Déterminer OLD : par défaut ``configs/live/`` (dernier état appliqué), sinon ``--old-configs-dir`` / ``--old-intent``.
-  2. Régénérer NEW dans ``configs/staging/`` (réutilisé puis **vidé** après ``update --push`` réussi
-     une fois ``live/`` à jour). Avec ``--only``, les autres ``*.cfg`` sont copiés depuis OLD.
+  1. Déterminer OLD : par défaut ``configs/<name>/live/`` (``name`` = champ racine du NEW intent),
+     sinon ``--old-configs-dir`` / ``--old-intent``.
+  2. Régénérer NEW dans ``configs/<name>/staging/`` (vidé après ``update --push`` réussi). Avec ``--only``,
+     les autres ``*.cfg`` sont copiés depuis OLD.
   3. Parser chaque paire de ``<node>.cfg`` en blocs (global vs ``interface`` / ``router``…).
-  4. ``diff_cfg`` produit la liste de lignes ; écriture dans un répertoire temporaire puis zip ``backup/modifs/`` (rien de persistant sous ``configs/`` hors live/staging/backup).
+  4. ``diff_cfg`` produit la liste de lignes ; zip ``configs/<name>/backup/modifs/`` (répertoire temporaire le temps du run).
 
 Sécurité :
   ``BANNED_CMD_RE`` et ``iter_effective_cfg_lines`` évitent de traiter des commandes
@@ -43,10 +44,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from cisco_intent.gns3_push import add_push_cli_arguments, run_push
 from cisco_intent.backup_zip import zip_run_dir
+from cisco_intent.intent import load_validate_intent, topology_name_from_intent
 from cisco_intent.paths import (
     backup_modifs_dir,
     live_dir,
@@ -92,18 +94,19 @@ def find_intent_in_run_dir(run_dir: Path) -> Path:
     return intents[0]
 
 
-def validate_live_for_update_old(live: Path) -> None:
-    """Vérifie que ``live/`` peut servir de OLD (``.cfg`` + ``Intent*.json``)."""
+def validate_live_for_update_old(live: Path, topology: str) -> None:
+    """Vérifie que ``configs/<topology>/live/`` peut servir de OLD (``.cfg`` + ``Intent*.json``)."""
     live = live.resolve()
     if not live.is_dir():
         raise FileNotFoundError(
-            f"Dossier configs/live introuvable: {live}. Lance un premier "
+            f"Dossier configs/{topology}/live introuvable: {live}. Lance un premier "
             "`python -m cisco_intent generate <intent.json> --push --gns3-project ...` "
-            "pour peupler configs/live/, ou utilise --old-configs-dir."
+            f"pour peupler configs/{topology}/live/, ou utilise --old-configs-dir."
         )
     if not any(live.glob("*.cfg")):
         raise FileNotFoundError(
-            f"Aucun fichier .cfg dans {live}. Initialise configs/live (voir ci-dessus) ou --old-configs-dir."
+            f"Aucun fichier .cfg dans {live}. Initialise configs/{topology}/live "
+            "(voir ci-dessus) ou --old-configs-dir."
         )
     intents = [p for p in live.iterdir() if p.is_file() and INTENT_FILE_RE.match(p.name)]
     if not intents:
@@ -112,9 +115,23 @@ def validate_live_for_update_old(live: Path) -> None:
         )
 
 
+def assert_old_run_topology_matches_new(old_run_dir: Path, topology_new: str) -> None:
+    """Vérifie que l'intent copié dans le run OLD a le même ``name`` que l'intent NEW."""
+    intent_path = find_intent_in_run_dir(old_run_dir)
+    old_data = load_validate_intent(intent_path)
+    t_old = topology_name_from_intent(old_data)
+    if t_old != topology_new:
+        raise ValueError(
+            f"L'intent dans {old_run_dir} a name={t_old!r}, mais l'intent NEW a name={topology_new!r}. "
+            "Pour comparer deux topologies différentes, utilise des chemins explicites (--old-configs-dir / "
+            "--new-configs-dir) en acceptant le risque."
+        )
+
+
 def run_generator(
     new_intent: Path,
     *,
+    intent: Optional[Dict[str, Any]] = None,
     only_nodes: Optional[Set[str]] = None,
     fill_from_run_dir: Optional[Path] = None,
     output_dir: Optional[Path] = None,
@@ -122,7 +139,7 @@ def run_generator(
     """
     Lance ``generate_configs`` sur l'intent donné ; lève si le code de retour est non nul.
 
-    ``output_dir`` : ex. ``staging_dir()`` pour ``update`` (évite d'écraser ``live/`` avant comparaison).
+    ``output_dir`` : ex. ``staging_dir(topology)`` pour ``update`` (évite d'écraser ``live/`` avant comparaison).
     """
     if not new_intent.exists():
         raise FileNotFoundError(f"Intent NEW introuvable: {new_intent}")
@@ -133,6 +150,7 @@ def run_generator(
         _eprint(f"[INFO] Copie des .cfg non listés depuis: {fill_from_run_dir}")
     rc, _ = generate_configs(
         new_intent,
+        intent=intent,
         only_nodes=only_nodes,
         fill_from_run_dir=fill_from_run_dir,
         output_dir=output_dir,
@@ -445,6 +463,7 @@ def list_nodes_in_run_dir(run_dir: Path) -> List[str]:
 
 def write_modifs_run(
     *,
+    topology: str,
     modifs_output_dir: Optional[Path],
     old_intent_path: Path,
     new_intent_path: Path,
@@ -455,7 +474,7 @@ def write_modifs_run(
 ) -> None:
     """
     Hors ``dry_run`` : écrit les modifs dans ``modifs_output_dir`` (ex. répertoire temporaire),
-    archive ``backup/modifs/Modifs-<timestamp>.zip``. En ``dry_run``, pas de fichiers sur disque.
+    archive ``configs/<topology>/backup/modifs/Modifs-<timestamp>.zip``. En ``dry_run``, pas de fichiers sur disque.
     """
     stamp = _now_stamp()
     zip_name = f"Modifs-{stamp}.zip"
@@ -466,7 +485,7 @@ def write_modifs_run(
 
     summary = {
         "timestamp": stamp,
-        "backup_zip": f"configs/backup/modifs/{zip_name}",
+        "backup_zip": f"configs/{topology}/backup/modifs/{zip_name}",
         "old_intent": str(old_intent_path),
         "new_intent": str(new_intent_path),
         "old_configs_dir": str(old_run_dir),
@@ -506,7 +525,7 @@ def write_modifs_run(
         dst.write_text("\n".join(diff_lines) + ("\n" if diff_lines else ""), encoding="utf-8")
         written += 1
 
-    mz = backup_modifs_dir() / zip_name
+    mz = backup_modifs_dir(topology) / zip_name
     try:
         zip_run_dir(out_dir, mz)
         print(f"[OK] Modifs: {written} fichier(s) .cfg → {mz}")
@@ -533,13 +552,13 @@ def main(argv: Sequence[str]) -> int:
         "--old-configs-dir",
         type=Path,
         default=None,
-        help="Override: dossier contenant OLD (.cfg + Intent*.json) ; défaut sinon: configs/live/",
+        help="Override: dossier contenant OLD (.cfg + Intent*.json) ; défaut: configs/<name>/live/ (name = NEW intent)",
     )
     ap.add_argument(
         "--new-configs-dir",
         type=Path,
         default=None,
-        help="Override: dossier cible pour la génération NEW (défaut: configs/staging)",
+        help="Override: dossier cible pour la génération NEW (défaut: configs/<name>/staging)",
     )
     ap.add_argument(
         "--only",
@@ -561,22 +580,41 @@ def main(argv: Sequence[str]) -> int:
     new_intent = _resolve_cli_path(args.new_intent)
     only = parse_only_list(args.only)
 
-    if args.old_configs_dir is not None:
-        ocd = args.old_configs_dir
-        old_run_dir = _resolve_cli_path(ocd)
-        if args.old_intent is not None:
+    try:
+        new_intent_data = load_validate_intent(new_intent)
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        _eprint(f"Erreur intent NEW: {e}")
+        return 1
+    topology_new = topology_name_from_intent(new_intent_data)
+
+    try:
+        if args.old_configs_dir is not None:
+            ocd = args.old_configs_dir
+            old_run_dir = _resolve_cli_path(ocd)
+            if args.old_intent is not None:
+                old_intent = _resolve_cli_path(args.old_intent)
+            else:
+                old_intent = find_intent_in_run_dir(old_run_dir)
+            assert_old_run_topology_matches_new(old_run_dir, topology_new)
+        elif args.old_intent is not None:
             old_intent = _resolve_cli_path(args.old_intent)
+            try:
+                old_intent_data = load_validate_intent(old_intent)
+            except (OSError, ValueError, json.JSONDecodeError) as e:
+                _eprint(f"Erreur intent OLD: {e}")
+                return 1
+            topology_old = topology_name_from_intent(old_intent_data)
+            scratch = scratch_old_intent_dir(topology_old)
+            run_generator(old_intent, intent=old_intent_data, output_dir=scratch)
+            old_run_dir = scratch
         else:
+            old_run_dir = live_dir(topology_new)
+            validate_live_for_update_old(old_run_dir, topology_new)
+            assert_old_run_topology_matches_new(old_run_dir, topology_new)
             old_intent = find_intent_in_run_dir(old_run_dir)
-    elif args.old_intent is not None:
-        old_intent = _resolve_cli_path(args.old_intent)
-        scratch = scratch_old_intent_dir()
-        run_generator(old_intent, output_dir=scratch)
-        old_run_dir = scratch
-    else:
-        old_run_dir = live_dir()
-        validate_live_for_update_old(old_run_dir)
-        old_intent = find_intent_in_run_dir(old_run_dir)
+    except ValueError as e:
+        _eprint(str(e))
+        return 1
 
     # Espacer deux zip ``backup/full_configs`` si ``--old-intent`` a déclenché une génération.
     time.sleep(1.1)
@@ -585,12 +623,18 @@ def main(argv: Sequence[str]) -> int:
     if args.new_configs_dir is not None:
         new_out = _resolve_cli_path(args.new_configs_dir)
     else:
-        new_out = staging_dir()
+        new_out = staging_dir(topology_new)
 
     if only:
-        run_generator(new_intent, only_nodes=only, fill_from_run_dir=old_run_dir, output_dir=new_out)
+        run_generator(
+            new_intent,
+            intent=new_intent_data,
+            only_nodes=only,
+            fill_from_run_dir=old_run_dir,
+            output_dir=new_out,
+        )
     else:
-        run_generator(new_intent, output_dir=new_out)
+        run_generator(new_intent, intent=new_intent_data, output_dir=new_out)
 
     new_run_dir = new_out
 
@@ -605,6 +649,7 @@ def main(argv: Sequence[str]) -> int:
 
     if args.dry_run:
         write_modifs_run(
+            topology=topology_new,
             modifs_output_dir=None,
             old_intent_path=old_intent,
             new_intent_path=new_intent,
@@ -620,6 +665,7 @@ def main(argv: Sequence[str]) -> int:
     td = Path(tempfile.mkdtemp(prefix="cisco_intent_modifs_"))
     try:
         write_modifs_run(
+            topology=topology_new,
             modifs_output_dir=td,
             old_intent_path=old_intent,
             new_intent_path=new_intent,
@@ -648,13 +694,16 @@ def main(argv: Sequence[str]) -> int:
         )
         if rc == 0 and not args.push_dry_run:
             try:
-                sync_live_from_run(new_run_dir)
-                _eprint(f"[INFO] configs/live/ mis à jour depuis {new_run_dir}")
-                if new_run_dir.resolve() == staging_dir().resolve():
-                    prepare_dir_for_generation(staging_dir())
-                    _eprint("[INFO] configs/staging/ vidé (copié dans live/, prêt pour un prochain update)")
+                sync_live_from_run(new_run_dir, topology_new)
+                _eprint(f"[INFO] configs/{topology_new}/live/ mis à jour depuis {new_run_dir}")
+                if new_run_dir.resolve() == staging_dir(topology_new).resolve():
+                    prepare_dir_for_generation(staging_dir(topology_new))
+                    _eprint(
+                        f"[INFO] configs/{topology_new}/staging/ vidé "
+                        "(copié dans live/, prêt pour un prochain update)"
+                    )
             except OSError as e:
-                _eprint(f"[WARN] sync configs/live/: {e}")
+                _eprint(f"[WARN] sync configs/{topology_new}/live/: {e}")
         return rc
     finally:
         shutil.rmtree(td, ignore_errors=True)
