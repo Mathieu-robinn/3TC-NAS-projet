@@ -7,8 +7,12 @@ Automatisation de la generation de configurations Cisco IOS pour un lab MPLS/BGP
 - `cisco_intent/` : package Python (generateur, diff modifs, push/sync GNS3).
 - Point d'entree unique : `python -m cisco_intent <sous-commande> ...` (depuis la racine du depot, ou avec `PYTHONPATH` sur la racine).
 - `intent/` : fichiers intent JSON d'exemple (`Intent.v4.json`, etc.).
-- `Configs/` : sorties de generation (`Configs-YYYYMMDD-HHMMSS/`).
-- `modifs/` : sorties du diff (`Modifs-YYYYMMDD-HHMMSS/`), cree au besoin.
+- `configs/` (tout en minuscules) regroupe :
+  - `configs/live/` : référence sur disque (au moins un `*.cfg`) ; rempli au premier `generate` sans push, ou **toujours** avec `generate --push` ; mis à jour depuis `staging/` après `diff --push` réussi ou après un **`push` manuel** (voir ci-dessous) ; OLD par défaut du `diff`
+  - `configs/staging/` : `generate` **sans** `--push` lorsque `live/` contient déjà des `*.cfg` ; aussi jeu NEW du `diff`. **Vidé** après copie vers `live/` (`diff --push` réussi, ou `push` manuel depuis un dossier autre que `live/` si `staging/` avait des `*.cfg`)
+  - `configs/scratch_old/` : baseline temporaire si `diff --old-intent`
+  - `configs/backup/modifs/Modifs-<timestamp>.zip` : historique des modifs incrémentales produites par `diff` (seul stockage persistant des snippets ; pas de dossier dédié sous `configs/`)
+  - `configs/backup/full_configs/Configs-<timestamp>.zip` : snapshot zip a chaque generation
 - `gns3/` : projets GNS3 (ex: `projet/`).
 - `docs/` : documentation du sujet et du format d'intent.
 
@@ -34,18 +38,14 @@ Depuis la racine du projet:
 python -m cisco_intent generate intent/Intent.v4.json
 ```
 
-Le programme cree un nouveau dossier:
+- Si `configs/live/` est **vide** (aucun `*.cfg`) : écriture dans **`configs/live/`**.
+- Si `live/` contient déjà des `*.cfg` : écriture dans **`configs/staging/`** (un message l’indique sur stderr).
 
-- `Configs/Configs-YYYYMMDD-HHMMSS/`
-
-Ce dossier contient:
-
-- les fichiers `*.cfg` des routeurs
-- une copie de l'intent utilise
+Contenu : fichiers `*.cfg` + copie de l’intent.
 
 ### Option `--push` (configs completes en telnet)
 
-Apres generation reussie, tu peux enchainer le push telnet vers GNS3 sans passer par la sous-commande `push` :
+Avec `--push`, la génération va **toujours** dans `configs/live/`, puis telnet. Après succès, `live` est déjà à jour.
 
 ```bash
 python -m cisco_intent generate intent/Intent.v4.json \
@@ -80,13 +80,13 @@ python -m cisco_intent sync-startup gns3/projet --dry-run
 python -m cisco_intent sync-startup gns3/projet --no-strict
 ```
 
-- Chemins personnalises (si besoin):
+- Chemins personnalises : par defaut les `.cfg` sont lus depuis `configs/live/`. Pour un dossier extrait d’une archive ou `configs/staging`, par ex. :
 
 ```bash
 python -m cisco_intent sync-startup \
   --gns3-file "gns3/projet/projet.gns3" \
   --project-root "gns3/projet" \
-  --configs-base "Configs"
+  --configs-dir "configs/staging"
 ```
 
 ## Documentation complementaire
@@ -98,14 +98,17 @@ python -m cisco_intent sync-startup \
 ## Notes
 
 - Le mapping routeur `<name>.cfg` -> startup-config est deduit via le fichier `.gns3` (node_id + dynamips_id).
-- La commande `sync-startup` utilise automatiquement le dernier dossier `Configs-YYYYMMDD-HHMMSS` dans `Configs/` (racine du depot).
+- La commande `sync-startup` utilise par defaut `configs/live/`. Utilise `--configs-dir` pour une autre source.
+- **`push` manuel** : si le dossier poussé **n’est pas** `configs/live/` (ex. dossier obtenu en dézipant un `backup/modifs/*.zip`, ou `configs/staging`) et que **`configs/staging/`** contient des `*.cfg`, après push réussi copie `staging` → `live` puis vide `staging`.
 
-## 3) Modifications a chaud (diff -> Modifs-*)
+## 3) Modifications a chaud (diff → backup/modifs)
 
 La sous-commande `diff`:
 
-- execute d'abord le generateur avec l'intent NEW
-- compare les configs OLD vs NEW (par blocs IOS) et genere des **commandes de modification** dans `modifs/Modifs-YYYYMMDD-HHMMSS/`
+- OLD par defaut : `configs/live/` (sinon `--old-configs-dir` ou `--old-intent`)
+- execute le generateur avec l'intent NEW (sortie dans `configs/staging/`, sans ecraser `live/` avant le push reussi)
+- compare OLD vs NEW (par blocs IOS) et enregistre les **commandes de modification** dans `configs/backup/modifs/Modifs-<timestamp>.zip` (répertoire temporaire le temps du run, supprimé ensuite ; `diff --push` lit ce dossier avant destruction)
+- apres `diff --push` reussi, `configs/live/` est aligne sur le run NEW (configs completes), pas sur le dossier modifs
 - emet les suppressions (`no ...` / `default interface ...`) pour eviter le **config ghosting**
 - n'emet jamais de commandes dangereuses (reload / write erase / etc.)
 
@@ -120,7 +123,7 @@ python -m cisco_intent diff \
 
 ### Push des modifs en telnet (GNS3 consoles)
 
-En une commande apres le diff (dossier `Modifs-*` produit puis push telnet) :
+En une commande : zip `backup/modifs/` puis push telnet depuis le répertoire temporaire (transparent) :
 
 ```bash
 python -m cisco_intent diff \
@@ -132,10 +135,10 @@ python -m cisco_intent diff \
 
 Avec `--dry-run` sur le diff, le push est ignore.
 
-Sinon, commande separee (equivalent) :
+Push **ultérieur** (sans refaire le diff) : dézipper l’archive voulue dans un dossier, puis :
 
 ```bash
-python -m cisco_intent push gns3/projet "modifs/Modifs-YYYYMMDD-HHMMSS" --only PE1
+python -m cisco_intent push gns3/projet "chemin/vers/dossier_dezip" --only PE1
 ```
 
 ### Autres sous-commandes

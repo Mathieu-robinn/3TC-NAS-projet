@@ -27,9 +27,11 @@ Réutilisation :
 
 Usage CLI direct :
   ``python -m cisco_intent push <dossier_projet_gns3> <dossier_cfg> [options]``
+  Après un push réussi, si le dossier poussé n'est pas ``configs/live/`` et que
+  ``configs/staging/`` contient des ``*.cfg``, ceux-ci sont recopiés dans ``live/`` puis ``staging/`` est vidé.
 
 Exemple :
-  ``python -m cisco_intent push gns3/projet_gns3_1 Configs/Configs-20260327-120000 --only PE1,P1 --write-memory``
+  ``python -m cisco_intent push gns3/projet_gns3_1 configs/live --only PE1,P1 --write-memory``
 ================================================================================
 """
 
@@ -694,9 +696,10 @@ def main(argv: Sequence[str]) -> int:
     ap.add_argument("--workers", type=int, default=1, help="Number of parallel pushes (default: 1)")
 
     args = ap.parse_args(list(argv))
-    return run_push(
+    cfg_dir = args.cfg_dir.resolve() if args.cfg_dir.is_absolute() else (Path.cwd() / args.cfg_dir).resolve()
+    prc = run_push(
         args.gns3_project_dir,
-        args.cfg_dir,
+        cfg_dir,
         gns3_file=args.gns3_file,
         only=args.only,
         strict=args.strict,
@@ -708,6 +711,23 @@ def main(argv: Sequence[str]) -> int:
         verbose=args.verbose,
         workers=args.workers,
     )
+    if prc == 0 and not args.dry_run:
+        from cisco_intent.paths import (
+            live_dir,
+            prepare_dir_for_generation,
+            staging_dir,
+            staging_dir_has_cfg_files,
+            sync_live_from_run,
+        )
+
+        if cfg_dir.resolve() != live_dir().resolve() and staging_dir_has_cfg_files():
+            try:
+                sync_live_from_run(staging_dir())
+                prepare_dir_for_generation(staging_dir())
+                print("[INFO] configs/live/ mis à jour depuis configs/staging/ (après push manuel)")
+            except OSError as e:
+                _eprint(f"[WARN] sync staging→live: {e}")
+    return prc
 
 
 if __name__ == "__main__":

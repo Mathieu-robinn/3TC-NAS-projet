@@ -8,11 +8,13 @@ Ce dépôt automatise la génération de configurations **Cisco IOS** (MPLS / BG
 |--------|------|
 | [`cisco_intent/`](../cisco_intent/) | Package Python : générateur, diff, push, sync |
 | [`intent/`](../intent/) | Fichiers intent d’exemple (`Intent.v4.json`, etc.) |
-| [`Configs/`](../Configs/) | Sorties du générateur : `Configs-YYYYMMDD-HHMMSS/*.cfg` + copie de l’intent |
-| [`modifs/`](../modifs/) | Sorties du diff : `Modifs-YYYYMMDD-HHMMSS/*.cfg` (commandes IOS incrémentales) |
+| [`configs/`](../configs/) | `live/`, `staging/`, `backup/` (zips), `scratch_old/` |
+| `configs/live/` | Sortie de `generate` : `*.cfg` + intent ; OLD par défaut du `diff` |
+| `configs/staging/` | Jeu NEW du `diff` (vidé après `diff --push` réussi) |
+| `configs/backup/full_configs/`, `configs/backup/modifs/` | Archives `.zip` (snapshots configs complètes + snippets modifs du `diff`) |
 | [`gns3/`](../gns3/) | Projets GNS3 |
 
-Tous les chemins par défaut (`Configs/`, `modifs/`) sont ancrés sur la **racine du dépôt** (voir `cisco_intent.paths`).
+Les chemins par défaut sont ancrés sur la **racine du dépôt** (voir `cisco_intent.paths`).
 
 ## Prérequis
 
@@ -32,10 +34,10 @@ python -m cisco_intent --help
 
 | Sous-commande | Description |
 |---------------|-------------|
-| `generate <intent.json>` | Produit les `.cfg` complets dans `Configs/Configs-*` |
-| `diff` | Compare deux générations d’intent, écrit les modifs dans `modifs/Modifs-*` |
-| `push <projet_gns3> <dossier_cfg>` | Envoie les `.cfg` sur les consoles **telnet** GNS3 (routeurs déjà démarrés) |
-| `sync-startup <projet_gns3>` | Copie le **dernier** run `Configs-*` vers les **startup-config** Dynamips |
+| `generate <intent.json>` | `live/` si aucun `*.cfg` dedans, sinon `staging/` ; **toujours** `live/` avec `--push` |
+| `diff` | OLD = `configs/live/` ; NEW dans `configs/staging/` ; modifs archivées dans `backup/modifs/*.zip` (temporaire sur disque le temps du run) |
+| `push <projet_gns3> <dossier_cfg>` | Telnet GNS3 ; si dossier ≠ `live/` et `staging/` a des `*.cfg` → copie `staging` → `live` après succès |
+| `sync-startup <projet_gns3>` | Copie les `.cfg` depuis **`configs/live/`** (ou `--configs-dir`) vers les **startup-config** Dynamips |
 
 Options détaillées : `python -m cisco_intent <sous-commande> -h`.
 

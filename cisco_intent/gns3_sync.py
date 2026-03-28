@@ -14,7 +14,7 @@ Différence avec ``gns3_push`` :
 Correspondance nœud ↔ fichier :
   Le fichier ``.gns3`` liste les nœuds Dynamips avec ``name``, ``node_id`` et
   ``properties.dynamips_id``. Le nom du routeur (ex. PE1) sert à trouver ``PE1.cfg``
-  dans le dernier dossier ``Configs-*`` sous la base configs du dépôt.
+  dans ``live/`` par défaut (dernier état appliqué), ou dans un dossier explicite via ``--configs-dir``.
 
 Pour étendre :
   - Autre hyperviseur : il faudrait un autre mapping que ``DynamipsNode.startup_filename``.
@@ -25,14 +25,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from cisco_intent.paths import configs_base_dir
+from cisco_intent.paths import live_dir
 
 
 @dataclass(frozen=True)
@@ -47,9 +46,6 @@ class DynamipsNode:
     def startup_filename(self) -> str:
         """Convention Dynamips dans le dossier ``configs`` du nœud."""
         return f"i{self.dynamips_id}_startup-config.cfg"
-
-
-CONFIGS_DIR_RE = re.compile(r"^Configs-(\d{8}-\d{6})$")
 
 
 def _load_json(path: Path) -> Any:
@@ -79,29 +75,6 @@ def iter_dynamips_nodes(gns3_json: dict[str, Any]) -> Iterable[DynamipsNode]:
         yield DynamipsNode(name=name, node_id=node_id, dynamips_id=dynamips_id)
 
 
-def find_latest_configs_dir(configs_base: Path) -> Path:
-    """Dernier dossier ``Configs-YYYYMMDD-HHMMSS`` trouvé sous ``configs_base``."""
-    if not configs_base.exists():
-        raise FileNotFoundError(f"Dossier configs_base introuvable: {configs_base}")
-    if not configs_base.is_dir():
-        raise NotADirectoryError(f"configs_base n'est pas un dossier: {configs_base}")
-
-    candidates: list[tuple[str, Path]] = []
-    for p in configs_base.iterdir():
-        if not p.is_dir():
-            continue
-        m = CONFIGS_DIR_RE.match(p.name)
-        if not m:
-            continue
-        candidates.append((m.group(1), p))
-
-    if not candidates:
-        raise FileNotFoundError(f"Aucun dossier Configs-YYYYMMDD-HHMMSS trouvé dans {configs_base}")
-
-    candidates.sort(key=lambda t: t[0])
-    return candidates[-1][1]
-
-
 def format_row(cols: list[str], widths: list[int]) -> str:
     """Formate une ligne de tableau alignée (troncature avec « … » si trop long)."""
     padded = [(c[: w - 1] + "…") if len(c) > w else c for c, w in zip(cols, widths)]
@@ -112,8 +85,8 @@ def main(argv: list[str]) -> int:
     """Sous-commande ``sync-startup`` : parse les args, copie les .cfg vers les startup Dynamips."""
     parser = argparse.ArgumentParser(
         description=(
-            "Analyse un projet GNS3 (.gns3) pour lier node_id <-> name, puis copie la dernière config "
-            "générée (Configs/Configs-*/<name>.cfg sous la racine du dépôt) vers le startup-config Dynamips."
+            "Analyse un projet GNS3 (.gns3) pour lier node_id <-> name, puis copie les <name>.cfg "
+            "depuis configs/live/ par défaut (ou --configs-dir) vers le startup-config Dynamips."
         )
     )
     parser.add_argument(
@@ -140,10 +113,14 @@ def main(argv: list[str]) -> int:
         ),
     )
     parser.add_argument(
-        "--configs-base",
+        "--configs-dir",
         type=Path,
         default=None,
-        help="Dossier contenant les runs Configs-YYYYMMDD-HHMMSS (défaut: Configs/ à la racine du dépôt)",
+        metavar="DIR",
+        help=(
+            "Dossier contenant directement les <hostname>.cfg (défaut: configs/live). "
+            "Ex.: dossier extrait d'une archive backup/full_configs ou configs/staging."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -167,11 +144,11 @@ def main(argv: list[str]) -> int:
     else:
         project_name = project_root.name
         gns3_file = project_root / f"{project_name}.gns3"
-    if args.configs_base is not None:
-        cb = args.configs_base
-        configs_base = cb.resolve() if cb.is_absolute() else (Path.cwd() / cb).resolve()
+    if args.configs_dir is not None:
+        cd = args.configs_dir
+        configs_source = cd.resolve() if cd.is_absolute() else (Path.cwd() / cd).resolve()
     else:
-        configs_base = configs_base_dir()
+        configs_source = live_dir()
     strict = not args.no_strict
 
     gns3_json = _load_json(gns3_file)
@@ -179,7 +156,8 @@ def main(argv: list[str]) -> int:
     if not nodes:
         raise RuntimeError("Aucun node dynamips trouvé dans le fichier .gns3")
 
-    latest_dir = find_latest_configs_dir(configs_base)
+    if not configs_source.is_dir():
+        raise FileNotFoundError(f"Dossier configs source introuvable: {configs_source}")
 
     dynamips_root = project_root / "project-files" / "dynamips"
     if not dynamips_root.is_dir():
@@ -187,7 +165,7 @@ def main(argv: list[str]) -> int:
 
     widths = [18, 36, 10, 10]
     print(f"Fichier .gns3: {gns3_file}")
-    print(f"Dossier configs source (dernier): {latest_dir}")
+    print(f"Dossier configs source: {configs_source}")
     print(f"Dossier dynamips: {dynamips_root}")
     print("")
     print(format_row(["name", "node_id", "dyn_id", "status"], widths))
@@ -199,7 +177,7 @@ def main(argv: list[str]) -> int:
 
     for n in nodes:
         # Même convention de nommage que le générateur : ``<hostname>.cfg``
-        src_cfg = latest_dir / f"{n.name}.cfg"
+        src_cfg = configs_source / f"{n.name}.cfg"
         dst_dir = dynamips_root / n.node_id / "configs"
         dst_cfg = dst_dir / n.startup_filename
 

@@ -12,11 +12,11 @@ Pourquoi des imports à l'intérieur des ``if cmd == ...`` ?
   Accélère le démarrage : par exemple ``python -m cisco_intent push`` n'importe pas
   le générateur tant que tu ne lances pas ``generate``.
 
-Flux ``generate`` + ``--push`` :
-  1. ``generate_configs`` écrit les .cfg dans un nouveau dossier ``Configs-*`` et retourne
-     ``(code, run_dir)``.
-  2. Si ``--push`` est actif, ``run_push`` envoie ces fichiers vers les consoles telnet
-     du projet GNS3 (voir ``gns3_push``).
+Flux ``generate`` :
+  - Sans ``--push`` : écrit dans ``configs/live/`` si celui-ci est vide (aucun ``*.cfg``),
+    sinon dans ``configs/staging/``.
+  - Avec ``--push`` : écrit toujours dans ``live/``, puis ``run_push`` ; après succès
+    (sans ``--push-dry-run``), ``sync`` depuis le dossier poussé (souvent ``live`` déjà à jour).
 
 Pour étendre :
   Ajoute un ``if cmd == "ma_commande":`` qui parse ``rest`` avec ``argparse`` ou
@@ -42,7 +42,7 @@ def _print_global_help() -> None:
 Usage: python -m cisco_intent <command> ...
 
 Commands:
-  generate <intent.json>   Génère les .cfg (Configs/Configs-YYYYMMDD-HHMMSS/)
+  generate <intent.json>   Génère les .cfg (live si vide, sinon staging ; toujours live avec --push)
   diff ...                 Diff intents -> modifs ; voir: python -m cisco_intent diff -h
   push ...                 Push telnet GNS3 ; voir: python -m cisco_intent push -h
   sync-startup ...         Copie configs -> startup Dynamips ; voir: python -m cisco_intent sync-startup -h
@@ -72,6 +72,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if cmd == "generate":
         from cisco_intent.generator import generate_configs
         from cisco_intent.gns3_push import add_push_cli_arguments, run_push
+        from cisco_intent.paths import live_dir_has_cfg_files, staging_dir
 
         p = argparse.ArgumentParser(prog="python -m cisco_intent generate")
         p.add_argument("intent", type=Path, help="Fichier intent JSON")
@@ -86,15 +87,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.push and args.gns3_project is None:
             p.error("--gns3-project requis avec --push")
 
-        rc, run_dir = generate_configs(args.intent)
+        if args.push:
+            gen_output_dir = None
+        elif live_dir_has_cfg_files():
+            gen_output_dir = staging_dir()
+        else:
+            gen_output_dir = None
+
+        rc, run_dir = generate_configs(args.intent, output_dir=gen_output_dir)
         if rc != 0:
             return rc
         if not args.push:
+            if (
+                gen_output_dir is not None
+                and run_dir is not None
+                and run_dir.resolve() == staging_dir().resolve()
+            ):
+                print(
+                    "[INFO] configs/live/ contient déjà des .cfg : "
+                    "génération écrite dans configs/staging/ (push manuel ou generate --push pour mettre live à jour).",
+                    file=sys.stderr,
+                )
             return 0
         assert run_dir is not None
+        from cisco_intent.paths import sync_live_from_run
+
         gns3_proj = _resolve_cli_path(args.gns3_project)
         gns3_file = _resolve_cli_path(args.gns3_file) if args.gns3_file else None
-        return run_push(
+        prc = run_push(
             gns3_proj,
             run_dir,
             gns3_file=gns3_file,
@@ -107,6 +127,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             verbose=args.push_verbose,
             workers=args.push_workers,
         )
+        if prc == 0 and not args.push_dry_run:
+            try:
+                sync_live_from_run(run_dir)
+                print(f"[INFO] configs/live/ mis à jour depuis {run_dir}")
+            except OSError as e:
+                print(f"[WARN] sync configs/live/: {e}", file=sys.stderr)
+        return prc
 
     if cmd == "diff":
         from cisco_intent.config_diff import main as diff_main

@@ -12,9 +12,9 @@ Pipeline principal (voir ``generate_configs``) :
   4. Pour chaque CE : config simplifiée (interface vers PE, LAN optionnel, BGP).
 
 Retour :
-  ``generate_configs`` renvoie ``(code_de_sortie, run_dir)`` : ``run_dir`` est le dossier
-  ``Configs-*`` créé si tout va bien, sinon ``None``. Cela permet à la CLI ``generate --push``
-  de passer ce dossier à ``gns3_push.run_push``.
+  ``generate_configs`` renvoie ``(code_de_sortie, out_dir)`` : dossier d'écriture
+  (``configs/live/`` par défaut, ou ``output_dir`` pour le ``diff``), sinon ``None``.
+  La CLI ``generate --push`` passe ce dossier à ``gns3_push.run_push``.
 
 Organisation du fichier :
   - Fonctions ``gen_*`` : morceaux de config réutilisables (en-tête, OSPF, BGP…).
@@ -54,7 +54,13 @@ from cisco_intent.intent import (
     normalize_intent,
     validate_intent,
 )
-from cisco_intent.paths import make_configs_run_dir
+from cisco_intent.backup_zip import zip_run_dir
+from cisco_intent.paths import (
+    backup_full_configs_dir,
+    configs_backup_stamp,
+    live_dir,
+    prepare_dir_for_generation,
+)
 
 
 # --- Blocs de texte IOS de base (hostname, loopback, interfaces core) ---
@@ -436,18 +442,21 @@ def generate_configs(
     *,
     only_nodes: Optional[Set[str]] = None,
     fill_from_run_dir: Optional[Path] = None,
+    output_dir: Optional[Path] = None,
 ) -> Tuple[int, Optional[Path]]:
     """
-    Génère les .cfg dans Configs/Configs-YYYYMMDD-HHMMSS/ (racine projet)
-    et copie l'intent dans ce répertoire.
+    Écrit les .cfg dans ``output_dir`` si fourni, sinon dans ``configs/live/`` (voir la CLI ``generate`` :
+    sans ``--push``, ``live/`` vide → ``live/`` ; sinon souvent ``staging/``).
+
+    Le ``diff`` passe ``staging_dir()`` (ou ``scratch_old``) explicitement.
 
     Si ``only_nodes`` et ``fill_from_run_dir`` sont fournis (cas ``diff --only``) :
     seuls les nœuds listés sont régénérés ; pour les autres, on copie
-    ``<nom>.cfg`` depuis ``fill_from_run_dir`` lorsqu'il existe (sinon génération
-    comme d'habitude). Ainsi un run NEW reste aligné sur OLD pour les équipements
-    non concernés par la modif à chaud.
+    ``<nom>.cfg`` depuis ``fill_from_run_dir`` lorsqu'il existe.
 
-    Retourne (code_de_sortie, run_dir) : run_dir est le dossier Configs-* créé si succès, sinon None.
+    Un zip d'archive est ajouté sous ``configs/backup/full_configs/Configs-<timestamp>.zip``.
+
+    Retourne (code_de_sortie, out_dir) : out_dir est le dossier cible si succès, sinon None.
     """
     intent_path = intent_path.resolve()
     try:
@@ -466,7 +475,8 @@ def generate_configs(
         customers = intent.get("customers", [])
         vpn = intent.get("vpn_services", {})
 
-        run_dir = make_configs_run_dir()
+        out_base = output_dir if output_dir is not None else live_dir()
+        run_dir = prepare_dir_for_generation(out_base)
         shutil.copy2(intent_path, run_dir / intent_path.name)
 
         def try_copy_unchanged(name: str) -> bool:
@@ -518,6 +528,12 @@ def generate_configs(
                     print(f"[OK] {path}")
 
         print(f"\nTerminé. Configs et backup intent dans {run_dir}")
+        try:
+            zip_dest = backup_full_configs_dir() / f"Configs-{configs_backup_stamp()}.zip"
+            zip_run_dir(run_dir, zip_dest)
+            print(f"[ZIP] {zip_dest}")
+        except OSError as e:
+            print(f"[WARN] Archive backup full_configs: {e}", file=sys.stderr)
         return 0, run_dir
     except Exception as e:
         print(f"Erreur: {e}", file=sys.stderr)
