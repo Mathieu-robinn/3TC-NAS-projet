@@ -16,7 +16,7 @@ Ordre de lecture conseillé pour comprendre le flux complet :
   2. intent      — charger, normaliser, valider le JSON
   3. allocation  — calculer les adresses IP (loopbacks, liens, clients, LAN)
   4. generator   — produire les fichiers ``<nom>.cfg``
-  5. config_diff — comparer deux runs de configs → fichiers de modifs
+  5. config_update — mise à jour incrémentale : comparer deux runs → modifs (hot-push)
   6. gns3_push   — envoyer les lignes IOS via telnet (consoles GNS3)
   7. gns3_sync   — copier des .cfg vers les startup-config Dynamips sur disque
 

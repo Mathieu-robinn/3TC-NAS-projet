@@ -13,7 +13,7 @@ Pipeline principal (voir ``generate_configs``) :
 
 Retour :
   ``generate_configs`` renvoie ``(code_de_sortie, out_dir)`` : dossier d'écriture
-  (``configs/live/`` par défaut, ou ``output_dir`` pour le ``diff``), sinon ``None``.
+  (``configs/live/`` par défaut, ou ``output_dir`` pour ``update``), sinon ``None``.
   La CLI ``generate --push`` passe ce dossier à ``gns3_push.run_push``.
 
 Organisation du fichier :
@@ -448,9 +448,9 @@ def generate_configs(
     Écrit les .cfg dans ``output_dir`` si fourni, sinon dans ``configs/live/`` (voir la CLI ``generate`` :
     sans ``--push``, ``live/`` vide → ``live/`` ; sinon souvent ``staging/``).
 
-    Le ``diff`` passe ``staging_dir()`` (ou ``scratch_old``) explicitement.
+    ``update`` passe ``staging_dir()`` (ou ``scratch_old``) explicitement.
 
-    Si ``only_nodes`` et ``fill_from_run_dir`` sont fournis (cas ``diff --only``) :
+    Si ``only_nodes`` et ``fill_from_run_dir`` sont fournis (cas ``update --only``) :
     seuls les nœuds listés sont régénérés ; pour les autres, on copie
     ``<nom>.cfg`` depuis ``fill_from_run_dir`` lorsqu'il existe.
 

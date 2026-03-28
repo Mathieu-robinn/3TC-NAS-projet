@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================================
-config_diff.py — Comparer deux jeux de .cfg → fichiers de « modifs » (hot-push)
+config_update.py — Mise à jour incrémentale : comparer deux jeux de .cfg → modifs (hot-push)
 ================================================================================
 
 Idée :
@@ -12,7 +12,7 @@ Idée :
 
 Flux typique :
   1. Déterminer OLD : par défaut ``configs/live/`` (dernier état appliqué), sinon ``--old-configs-dir`` / ``--old-intent``.
-  2. Régénérer NEW dans ``configs/staging/`` (réutilisé puis **vidé** après ``--push`` réussi
+  2. Régénérer NEW dans ``configs/staging/`` (réutilisé puis **vidé** après ``update --push`` réussi
      une fois ``live/`` à jour). Avec ``--only``, les autres ``*.cfg`` sont copiés depuis OLD.
   3. Parser chaque paire de ``<node>.cfg`` en blocs (global vs ``interface`` / ``router``…).
   4. ``diff_cfg`` produit la liste de lignes ; écriture dans un répertoire temporaire puis zip ``backup/modifs/`` (rien de persistant sous ``configs/`` hors live/staging/backup).
@@ -92,7 +92,7 @@ def find_intent_in_run_dir(run_dir: Path) -> Path:
     return intents[0]
 
 
-def validate_live_for_diff_old(live: Path) -> None:
+def validate_live_for_update_old(live: Path) -> None:
     """Vérifie que ``live/`` peut servir de OLD (``.cfg`` + ``Intent*.json``)."""
     live = live.resolve()
     if not live.is_dir():
@@ -122,7 +122,7 @@ def run_generator(
     """
     Lance ``generate_configs`` sur l'intent donné ; lève si le code de retour est non nul.
 
-    ``output_dir`` : ex. ``staging_dir()`` pour le ``diff`` (évite d'écraser ``live/`` avant comparaison).
+    ``output_dir`` : ex. ``staging_dir()`` pour ``update`` (évite d'écraser ``live/`` avant comparaison).
     """
     if not new_intent.exists():
         raise FileNotFoundError(f"Intent NEW introuvable: {new_intent}")
@@ -423,7 +423,7 @@ def diff_cfg(old_cfg: ParsedCfg, new_cfg: ParsedCfg) -> List[str]:
 
     for ln in out:
         if BANNED_CMD_RE.search(ln.strip()):
-            raise ValueError(f"Commande interdite générée par le diff: {ln!r}")
+            raise ValueError(f"Commande interdite générée par update: {ln!r}")
 
     return out
 
@@ -454,7 +454,7 @@ def write_modifs_run(
     dry_run: bool,
 ) -> None:
     """
-    Hors ``dry_run`` : écrit les diffs dans ``modifs_output_dir`` (ex. répertoire temporaire),
+    Hors ``dry_run`` : écrit les modifs dans ``modifs_output_dir`` (ex. répertoire temporaire),
     archive ``backup/modifs/Modifs-<timestamp>.zip``. En ``dry_run``, pas de fichiers sur disque.
     """
     stamp = _now_stamp()
@@ -520,7 +520,7 @@ def _resolve_cli_path(p: Path) -> Path:
 
 
 def main(argv: Sequence[str]) -> int:
-    """Sous-commande ``diff`` : argparse, génération NEW, diff, option ``--push``."""
+    """Sous-commande ``update`` : argparse, génération NEW, calcul des modifs, option ``--push``."""
     ap = argparse.ArgumentParser(
         description=(
             "Génère des configs de modifications (hot-push) en comparant les configs issues de 2 intents "
@@ -547,7 +547,7 @@ def main(argv: Sequence[str]) -> int:
         default=None,
         help="Nœuds dont on régénère le .cfg ; les autres sont copiés depuis OLD",
     )
-    ap.add_argument("--dry-run", action="store_true", help="N'écrit rien, affiche un résumé et le volume de diffs")
+    ap.add_argument("--dry-run", action="store_true", help="N'écrit rien, affiche un résumé et le volume de lignes de modifs")
     add_push_cli_arguments(ap)
     args = ap.parse_args(list(argv))
 
@@ -575,7 +575,7 @@ def main(argv: Sequence[str]) -> int:
         old_run_dir = scratch
     else:
         old_run_dir = live_dir()
-        validate_live_for_diff_old(old_run_dir)
+        validate_live_for_update_old(old_run_dir)
         old_intent = find_intent_in_run_dir(old_run_dir)
 
     # Espacer deux zip ``backup/full_configs`` si ``--old-intent`` a déclenché une génération.
@@ -614,7 +614,7 @@ def main(argv: Sequence[str]) -> int:
             dry_run=True,
         )
         if args.push:
-            _eprint("[INFO] --push ignoré (--dry-run actif pour le diff)")
+            _eprint("[INFO] --push ignoré (--dry-run actif pour update)")
         return 0
 
     td = Path(tempfile.mkdtemp(prefix="cisco_intent_modifs_"))
@@ -652,7 +652,7 @@ def main(argv: Sequence[str]) -> int:
                 _eprint(f"[INFO] configs/live/ mis à jour depuis {new_run_dir}")
                 if new_run_dir.resolve() == staging_dir().resolve():
                     prepare_dir_for_generation(staging_dir())
-                    _eprint("[INFO] configs/staging/ vidé (copié dans live/, prêt pour un prochain diff)")
+                    _eprint("[INFO] configs/staging/ vidé (copié dans live/, prêt pour un prochain update)")
             except OSError as e:
                 _eprint(f"[WARN] sync configs/live/: {e}")
         return rc

@@ -17,7 +17,7 @@ IPv4 :’)
 
 ### Repository automation (outillage du dépôt)
 
-The repo ships a Python package **`cisco_intent`** driven by **`python -m cisco_intent`** (generate full configs from JSON intent, diff for incremental IOS snippets, telnet **push**, and **sync-startup** for Dynamips files). Paths default to repo root (`intent/`, `configs/` with `live/`, `staging/`, `backup/` incl. `backup/modifs/` zip archives for incremental diffs, etc.). See **[`docs/README.md`](README.md)** (French hub) and the root **`README.md`** for command examples.
+The repo ships a Python package **`cisco_intent`** driven by **`python -m cisco_intent`** (generate full configs from JSON intent, **update** for incremental IOS snippets, telnet **push**, and **sync-startup** for Dynamips files). Paths default to repo root (`intent/`, `configs/` with `live/`, `staging/`, `backup/` incl. `backup/modifs/` zip archives for incremental updates, etc.). See **[`docs/README.md`](README.md)** (French hub) and the root **`README.md`** for command examples.
 
 ---
 
@@ -211,7 +211,7 @@ The repo ships a Python package **`cisco_intent`** driven by **`python -m cisco_
 
 ### Phase 4: Deeper
 
-- [X] Incremental config lifecycle (add/delete/update) without reload/wipe/ghost config — see **`cisco_intent diff`** + **`push`** in [`docs/README.md`](README.md)
+- [X] Incremental config lifecycle (add/delete/update) without reload/wipe/ghost config — see **`cisco_intent update`** + **`push`** in [`docs/README.md`](README.md)
 - [ ] Site sharing (multiple RTs)
 - [ ] Internet services
 - [ ] Ingress TE for dual-connected CE

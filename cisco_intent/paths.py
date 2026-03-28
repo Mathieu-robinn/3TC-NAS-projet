@@ -14,7 +14,7 @@ Données / effets :
   - Retourne des ``pathlib.Path`` ; ``prepare_dir_for_generation`` prépare un dossier cible.
 
 Liens : ``generator.generate_configs`` écrit où indique ``output_dir`` (``live/`` ou ``staging/`` selon la CLI) ;
-         ``config_diff`` utilise ``staging_dir``, ``live_dir`` ; les modifs vont en zip sous ``backup/modifs/`` ;
+         ``config_update`` utilise ``staging_dir``, ``live_dir`` ; les modifs vont en zip sous ``backup/modifs/`` ;
          ``sync_live_from_run`` met à jour ``configs/live/``.
 ================================================================================
 """
@@ -45,9 +45,9 @@ def live_dir_has_cfg_files() -> bool:
 
 def staging_dir() -> Path:
     """
-    Brouillon : jeu complet produit par ``diff``, ou par ``generate`` sans ``--push``
+    Brouillon : jeu complet produit par ``update``, ou par ``generate`` sans ``--push``
     lorsque ``live/`` contient déjà des ``*.cfg``. Vidé après copie vers ``live/``
-    (``diff --push`` réussi ou ``push`` manuel depuis un dossier autre que ``live/``).
+    (``update --push`` réussi ou ``push`` manuel depuis un dossier autre que ``live/``).
     """
     return configs_data_root() / "staging"
 
@@ -59,7 +59,7 @@ def staging_dir_has_cfg_files() -> bool:
 
 
 def scratch_old_intent_dir() -> Path:
-    """Baseline OLD lorsque ``diff`` est lancé avec ``--old-intent`` (régénération depuis un JSON)."""
+    """Baseline OLD lorsque ``update`` est lancé avec ``--old-intent`` (régénération depuis un JSON)."""
     return configs_data_root() / "scratch_old"
 
 

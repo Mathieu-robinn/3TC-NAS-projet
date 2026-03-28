@@ -6,12 +6,12 @@ Ce dépôt automatise la génération de configurations **Cisco IOS** (MPLS / BG
 
 | Élément | Rôle |
 |--------|------|
-| [`cisco_intent/`](../cisco_intent/) | Package Python : générateur, diff, push, sync |
+| [`cisco_intent/`](../cisco_intent/) | Package Python : générateur, update, push, sync |
 | [`intent/`](../intent/) | Fichiers intent d’exemple (`Intent.v4.json`, etc.) |
 | [`configs/`](../configs/) | `live/`, `staging/`, `backup/` (zips), `scratch_old/` |
-| `configs/live/` | Sortie de `generate` : `*.cfg` + intent ; OLD par défaut du `diff` |
-| `configs/staging/` | Jeu NEW du `diff` (vidé après `diff --push` réussi) |
-| `configs/backup/full_configs/`, `configs/backup/modifs/` | Archives `.zip` (snapshots configs complètes + snippets modifs du `diff`) |
+| `configs/live/` | Sortie de `generate` : `*.cfg` + intent ; OLD par défaut de `update` |
+| `configs/staging/` | Jeu NEW de `update` (vidé après `update --push` réussi) |
+| `configs/backup/full_configs/`, `configs/backup/modifs/` | Archives `.zip` (snapshots configs complètes + snippets modifs de `update`) |
 | [`gns3/`](../gns3/) | Projets GNS3 |
 
 Les chemins par défaut sont ancrés sur la **racine du dépôt** (voir `cisco_intent.paths`).
@@ -35,7 +35,7 @@ python -m cisco_intent --help
 | Sous-commande | Description |
 |---------------|-------------|
 | `generate <intent.json>` | `live/` si aucun `*.cfg` dedans, sinon `staging/` ; **toujours** `live/` avec `--push` |
-| `diff` | OLD = `configs/live/` ; NEW dans `configs/staging/` ; modifs archivées dans `backup/modifs/*.zip` (temporaire sur disque le temps du run) |
+| `update` | OLD = `configs/live/` ; NEW dans `configs/staging/` ; modifs archivées dans `backup/modifs/*.zip` (temporaire sur disque le temps du run) |
 | `push <projet_gns3> <dossier_cfg>` | Telnet GNS3 ; si dossier ≠ `live/` et `staging/` a des `*.cfg` → copie `staging` → `live` après succès |
 | `sync-startup <projet_gns3>` | Copie les `.cfg` depuis **`configs/live/`** (ou `--configs-dir`) vers les **startup-config** Dynamips |
 
@@ -58,7 +58,7 @@ python -m cisco_intent generate intent/Intent.v4.json --push --gns3-project gns3
 **Diff puis push** des modifs
 
 ```bash
-python -m cisco_intent diff --new-intent intent/foo.json --push --gns3-project gns3/projet
+python -m cisco_intent update --new-intent intent/foo.json --push --gns3-project gns3/projet
 ```
 
 **Préparer un démarrage à froid GNS3** (fichiers startup sur disque)

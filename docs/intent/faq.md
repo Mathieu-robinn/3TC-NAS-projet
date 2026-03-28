@@ -85,28 +85,28 @@ Méthodes d’annonce BGP:
 
 - **Intents** : répertoire [`intent/`](../../intent/) à la racine du dépôt (ex. `Intent.v4.json`). Tu peux ajouter `intent/examples/` pour des variantes locales.
 - **Configs complètes** : `generate` sans `--push` → `configs/live/` si celui-ci n’a encore aucun `*.cfg`, sinon `configs/staging/` ; avec `--push` → toujours `live/`. Zip `configs/backup/full_configs/Configs-<timestamp>.zip` à chaque génération.
-- **Modifs (diff)** : archive `configs/backup/modifs/Modifs-<timestamp>.zip` uniquement (pas de dossier persistant ; push ultérieur = dézipper puis `push <dossier>`).
-- **configs/live/** : dernier jeu appliqué (après `generate --push` / `diff --push` réussi) ; OLD par défaut au `diff`.
+- **Modifs (`update`)** : archive `configs/backup/modifs/Modifs-<timestamp>.zip` uniquement (pas de dossier persistant ; push ultérieur = dézipper puis `push <dossier>`).
+- **configs/live/** : dernier jeu appliqué (après `generate --push` / `update --push` réussi) ; OLD par défaut pour `update`.
 
 Ces chemins par défaut sont relatifs à la **racine du dépôt** (`cisco_intent.paths.PROJECT_ROOT`).
 
 ## Différence entre `push` (telnet) et `sync-startup` ?
 
-- **`push`** : envoie le contenu des `.cfg` sur les **consoles telnet** GNS3 — les VMs/routeurs doivent être **déjà démarrés**. Adapté au **chaud** (y compris les fichiers de **modifs** produits par `diff`).
+- **`push`** : envoie le contenu des `.cfg` sur les **consoles telnet** GNS3 — les VMs/routeurs doivent être **déjà démarrés**. Adapté au **chaud** (y compris les fichiers de **modifs** produits par `update`).
 - **`sync-startup`** : copie les `.cfg` depuis **`configs/live/`** par défaut (ou `--configs-dir`, ex. dossier extrait d’un zip ou `configs/staging`) vers les **startup-config** Dynamips — utile pour un **prochain démarrage à froid** dans GNS3.
 
-## `--push` sur `generate` / `diff` vs sous-commande `push` ?
+## `--push` sur `generate` / `update` vs sous-commande `push` ?
 
 - **`generate … --push --gns3-project DIR`** : génère toujours dans `live/` puis push ; `live` reste la référence.
 - **`push` (manuel)** : après succès, si le dossier poussé n’est pas `live/` et que `staging/` contient des `*.cfg`, copie `staging` → `live` puis vide `staging`.
-- **`diff … --push --gns3-project DIR`** : pousse les snippets depuis un répertoire temporaire (après création du zip) ; si le push réussit, **`configs/live/`** est rempli depuis **`configs/staging/`** (NEW complet), pas depuis les seules modifs.
+- **`update … --push --gns3-project DIR`** : pousse les snippets depuis un répertoire temporaire (après création du zip) ; si le push réussit, **`configs/live/`** est rempli depuis **`configs/staging/`** (NEW complet), pas depuis les seules modifs.
 - **`push PROJET DOSSIER_CFG`** : équivalent explicite quand tu choisis toi-même le dossier de `.cfg`.
 
-Options communes : `--push-only`, `--push-dry-run`, `--push-write-memory`, etc. (`python -m cisco_intent generate -h` / `diff -h`).
+Options communes : `--push-only`, `--push-dry-run`, `--push-write-memory`, etc. (`python -m cisco_intent generate -h` / `update -h`).
 
-## `diff --dry-run` et `--push` ?
+## `update --dry-run` et `--push` ?
 
-Avec **`--dry-run`**, le diff **n’écrit pas** les modifs sur disque : **`--push` est ignoré** (rien de cohérent à envoyer). Enlever `--dry-run` pour produire les fichiers puis pousser, ou lancer `push` séparément ensuite.
+Avec **`--dry-run`**, `update` **n’écrit pas** les modifs sur disque : **`--push` est ignoré** (rien de cohérent à envoyer). Enlever `--dry-run` pour produire les fichiers puis pousser, ou lancer `push` séparément ensuite.
 
 ## Est-ce que le générateur peut traiter d’autres protocoles/stratégies ?
 

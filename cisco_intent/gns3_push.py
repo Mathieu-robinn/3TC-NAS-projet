@@ -23,7 +23,7 @@ Regex sur flux binaire :
 
 Réutilisation :
   ``add_push_cli_arguments`` + ``run_push`` sont appelés depuis ``cli.generate`` et
-  ``config_diff`` quand l'utilisateur ajoute ``--push``.
+  ``config_update`` quand l'utilisateur ajoute ``--push``.
 
 Usage CLI direct :
   ``python -m cisco_intent push <dossier_projet_gns3> <dossier_cfg> [options]``
@@ -523,7 +523,7 @@ def run_push(
 ) -> int:
     """
     Pousse les <name>.cfg de cfg_dir vers les consoles telnet du projet GNS3.
-    Même logique que la sous-commande ``push`` (réutilisable depuis generate/diff).
+    Même logique que la sous-commande ``push`` (réutilisable depuis generate/update).
 
     Parallélisme : chaque worker lance ``asyncio.run(push_one(...))`` dans un thread
     (telnetlib3 est asyncio ; plusieurs boucles event en parallèle = un thread par push).
@@ -646,7 +646,7 @@ def add_push_cli_arguments(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         metavar="NODES",
-        help="Avec --push : nœuds à pousser (liste séparée par virgules). Pour ``diff``, utiliser plutôt --only.",
+        help="Avec --push : nœuds à pousser (liste séparée par virgules). Pour ``update``, utiliser plutôt --only.",
     )
     parser.add_argument(
         "--push-strict",

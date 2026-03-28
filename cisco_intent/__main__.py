@@ -9,7 +9,7 @@ et exécute ce module comme script.
 
 Rôle :
   Déléguer à ``cli.main()`` qui :
-  - lit les arguments après le nom du module (sous-commandes : generate, diff, push, …)
+  - lit les arguments après le nom du module (sous-commandes : generate, update, push, …)
   - renvoie un code entier (0 = succès) ; ``raise SystemExit(main())`` propage ce code
     au processus (utile pour les scripts et CI).
 

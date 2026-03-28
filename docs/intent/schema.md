@@ -9,11 +9,11 @@ Le schéma ci-dessous est consommé par le générateur (`cisco_intent.generator
 | Commande | Effet |
 |----------|--------|
 | `python -m cisco_intent generate <intent.json>` | `live/` si vide (sans `*.cfg`), sinon `staging/` ; avec `--push` toujours `live/` + zip dans `configs/backup/full_configs/` |
-| `python -m cisco_intent diff --new-intent …` | OLD = `configs/live/` par défaut ; NEW dans `configs/staging/` ; modifs archivées dans `configs/backup/modifs/Modifs-*.zip` |
+| `python -m cisco_intent update --new-intent …` | OLD = `configs/live/` par défaut ; NEW dans `configs/staging/` ; modifs archivées dans `configs/backup/modifs/Modifs-*.zip` |
 | `python -m cisco_intent push <projet> <dossier_cfg>` | Push **telnet** des `.cfg` vers des routeurs **déjà démarrés** dans GNS3 |
 | `python -m cisco_intent sync-startup <projet>` | Copie les `.cfg` depuis **`configs/live/`** (ou `--configs-dir`) vers les **startup-config** Dynamips |
 
-Options **`--push`** et **`--gns3-project`** sur `generate` et `diff` enchaînent le push telnet après succès (voir `python -m cisco_intent generate -h` / `diff -h`). Les chemins par défaut sont définis dans `cisco_intent.paths` (`PROJECT_ROOT`).
+Options **`--push`** et **`--gns3-project`** sur `generate` et `update` enchaînent le push telnet après succès (voir `python -m cisco_intent generate -h` / `update -h`). Les chemins par défaut sont définis dans `cisco_intent.paths` (`PROJECT_ROOT`).
 
 ## Vue d’ensemble
 

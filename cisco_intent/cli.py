@@ -5,7 +5,7 @@ cli.py — Interface en ligne de commande (router des sous-commandes)
 ================================================================================
 
 Rôle :
-  C'est le « tableau de bord » : selon le premier argument (generate, diff, push,
+  C'est le « tableau de bord » : selon le premier argument (generate, update, push,
   sync-startup), on importe le module concerné et on lui passe le reste des arguments.
 
 Pourquoi des imports à l'intérieur des ``if cmd == ...`` ?
@@ -22,7 +22,7 @@ Pour étendre :
   Ajoute un ``if cmd == "ma_commande":`` qui parse ``rest`` avec ``argparse`` ou
   délègue à une fonction ``main`` d'un nouveau module.
 
-Liens : ``generator.generate_configs``, ``config_diff.main``, ``gns3_push.run_push``,
+Liens : ``generator.generate_configs``, ``config_update.main``, ``gns3_push.run_push``,
          ``gns3_sync.main``.
 ================================================================================
 """
@@ -43,7 +43,7 @@ Usage: python -m cisco_intent <command> ...
 
 Commands:
   generate <intent.json>   Génère les .cfg (live si vide, sinon staging ; toujours live avec --push)
-  diff ...                 Diff intents -> modifs ; voir: python -m cisco_intent diff -h
+  update ...               Mise à jour incrémentale (intent) ; voir: python -m cisco_intent update -h
   push ...                 Push telnet GNS3 ; voir: python -m cisco_intent push -h
   sync-startup ...         Copie configs -> startup Dynamips ; voir: python -m cisco_intent sync-startup -h
 """
@@ -57,7 +57,7 @@ def _resolve_cli_path(p: Path) -> Path:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """
-    Point d'entrée CLI : route vers ``generate``, ``diff``, ``push`` ou ``sync-startup``.
+    Point d'entrée CLI : route vers ``generate``, ``update``, ``push`` ou ``sync-startup``.
 
     Retourne un code de sortie entier (0 succès, 2 aide/erreur d'usage, autres codes selon sous-commande).
     """
@@ -135,10 +135,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"[WARN] sync configs/live/: {e}", file=sys.stderr)
         return prc
 
-    if cmd == "diff":
-        from cisco_intent.config_diff import main as diff_main
+    if cmd == "update":
+        from cisco_intent.config_update import main as update_main
 
-        return diff_main(rest)
+        return update_main(rest)
 
     if cmd == "push":
         from cisco_intent.gns3_push import main as push_main
