@@ -1,10 +1,18 @@
 # Exemples d’intents (v4.0) + recettes
 
-Ce document explique les intents fournis dans `script/examples/` et propose des “recettes” pour modifier une variante sans réécrire tout le JSON.
+Les JSON **full-mesh** et **dual RR** décrits ci-dessous ne sont **pas** fournis dans le dépôt par défaut : tu peux les créer sous `intent/examples/` (à créer si besoin) ou appliquer les recettes à `intent/Intent.v4.json`. Les intents livrés se trouvent dans [`intent/`](../../intent/) (ex. `Intent.v4.json`, `Intent.v4.NEW.example.json`).
+
+Ce document propose des variantes et des **recettes** pour modifier un intent sans tout réécrire. Après modification, valide en régénérant :
+
+```bash
+python -m cisco_intent generate intent/Intent.v4.json
+```
+
+(Remplace le chemin par ton fichier, ex. `intent/examples/Intent_full_mesh.json` si tu l’as ajouté.)
 
 ## Exemple 1 — iBGP full-mesh
 
-Fichier: `script/examples/Intent_full_mesh.json`
+Fichier (à placer si besoin): `intent/examples/Intent_full_mesh.json`
 
 Objectif:
 - Underlay OSPF single-area + MPLS/LDP partout sur les liens core
@@ -29,9 +37,15 @@ Quand l’utiliser:
 - Topologies petites (2–6 PEs), lab simple.
 - Quand tu veux éviter la complexité/centralisation d’un RR.
 
+**Commande** (une fois l’intent enregistré, par ex. sous `intent/examples/Intent_full_mesh.json`) :
+
+```bash
+python -m cisco_intent generate intent/examples/Intent_full_mesh.json
+```
+
 ## Exemple 2 — Dual RR + multi-area OSPF (explicit) + MPLS explicite + LAN VLAN
 
-Fichier: `script/examples/Intent_dual_rr_multi_area.json`
+Fichier (à placer si besoin): `intent/examples/Intent_dual_rr_multi_area.json`
 
 Objectif:
 - OSPF multi-area: l’area est décidée **par lien** via `igp_area`
@@ -99,12 +113,18 @@ Effet:
 - Sur chaque CE, création d’une subinterface `<parent>.<vlan>` avec `encapsulation dot1Q <vlan>`.
 - Redistribution `connected` filtrée par route-map (match interface LAN) pour ne pas annoncer le lien CE-PE.
 
+**Commande** (intent enregistré sous `intent/examples/Intent_dual_rr_multi_area.json` par exemple) :
+
+```bash
+python -m cisco_intent generate intent/examples/Intent_dual_rr_multi_area.json
+```
+
 ## Recettes
 
 ### Passer de RR (rr_clients) à full-mesh
 
-1) Dans `autonomous_systems.<AS>.bgp.peering.strategy`, mettre `full_mesh`.\n
-2) Supprimer (optionnel) `bgp.route_reflectors` (le script n’en a plus besoin).
+1) Dans `autonomous_systems.<AS>.bgp.peering.strategy`, mettre `full_mesh`.
+2) Supprimer (optionnel) `bgp.route_reflectors` (le générateur n’en a plus besoin en full-mesh).
 
 ```json
 "peering": { "strategy": "full_mesh", "transport": "loopback" }
@@ -170,5 +190,11 @@ et `links[].mpls`.
 ```json
 "type": "subinterface_vlan",
 "subinterface": { "parent": "GigabitEthernet0/1", "vlan_base": 200 }
+```
+
+Après toute recette appliquée à un fichier sous `intent/` :
+
+```bash
+python -m cisco_intent generate intent/Intent.v4.json
 ```
 

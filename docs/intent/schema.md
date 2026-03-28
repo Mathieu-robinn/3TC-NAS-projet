@@ -1,6 +1,19 @@
 # Référence du schéma `Intent.json` (v4.0)
 
-Ce document décrit **les champs réellement supportés** par `script/script_intent_to_configs.py` et les valeurs attendues.
+Ce document décrit **les champs réellement supportés** par le package `cisco_intent` (`python -m cisco_intent generate`) et les valeurs attendues.
+
+## Outils et commandes
+
+Le schéma ci-dessous est consommé par le générateur (`cisco_intent.generator`). En pratique :
+
+| Commande | Effet |
+|----------|--------|
+| `python -m cisco_intent generate <intent.json>` | Écrit les configs complètes dans `Configs/Configs-YYYYMMDD-HHMMSS/` (racine du dépôt) + copie de l’intent |
+| `python -m cisco_intent diff --new-intent …` | Régénère, compare OLD/NEW, écrit des **lignes de modif** dans `modifs/Modifs-YYYYMMDD-HHMMSS/` |
+| `python -m cisco_intent push <projet> <dossier_cfg>` | Push **telnet** des `.cfg` vers des routeurs **déjà démarrés** dans GNS3 |
+| `python -m cisco_intent sync-startup <projet>` | Copie le **dernier** `Configs-*` vers les **startup-config** Dynamips (démarrage à froid) |
+
+Options **`--push`** et **`--gns3-project`** sur `generate` et `diff` enchaînent le push telnet après succès (voir `python -m cisco_intent generate -h` / `diff -h`). Les chemins par défaut sont définis dans `cisco_intent.paths` (`PROJECT_ROOT`).
 
 ## Vue d’ensemble
 
@@ -24,7 +37,7 @@ Structure haut niveau:
 - **Requis**: recommandé
 - **Valeur attendue**: `"4.0"`
 
-Le script n’impose pas strictement la valeur, mais la documentation et les exemples sont alignés sur `4.0`.
+Le générateur n’impose pas strictement la valeur, mais la documentation et les exemples sont alignés sur `4.0`.
 
 ## `addressing`
 
@@ -39,11 +52,10 @@ Champs:
 | `p2p_pool` | string (CIDR) | oui | `10.0.0.0/16` | Pool des liens core P2P. |
 | `customer_pool` | string (CIDR) | oui | `172.16.0.0/16` | Pool des liens CE-PE (accès client). |
 | `p2p_prefix` | int | oui | `30` | Préfixe des sous-réseaux P2P core. |
-| `ce_pe_prefix` | int | recommandé | `30` | Préfixe des sous-réseaux CE-PE. |
+| `ce_pe_prefix` | int | oui | `30` | Préfixe des sous-réseaux CE-PE (seule source utilisée par le générateur). |
 
 Notes:
-- Le script accepte aussi des clés historiques pour le préfixe CE-PE: `pe_ce_prefix` ou `pe_ce.addressing.prefix`.
-- `customer_prefix` peut exister dans certains intents mais n’est pas nécessaire ici.
+- `customer_prefix` peut apparaître dans des intents d’exemple mais n’est pas consommé par `cisco_intent`.
 
 ## `autonomous_systems`
 
@@ -77,7 +89,9 @@ Format:
 - **Type**: array
 - **Requis**: oui
 
-Chaque lien core doit avoir 2 endpoints:
+Chaque élément est un **objet** avec exactement deux **endpoints** (pas d’autre forme de lien).
+
+Chaque lien core doit avoir 2 endpoints :
 
 ```json
 {
@@ -122,7 +136,7 @@ Champs:
 | Champ | Type | Requis | Valeurs | Rôle |
 |---|---:|---:|---|---|
 | `enabled` | bool | non | true/false | Active MPLS/LDP global + possibilité de `mpls ip` interface. |
-| `label_distribution` | string | non | `ldp` | Indicatif (le script génère LDP). |
+| `label_distribution` | string | non | `ldp` | Indicatif (le générateur produit LDP). |
 | `interfaces.mode` | string | non | `all_core_links`, `explicit` | Contrôle “mpls ip” par interface. |
 
 Comportements:
@@ -139,7 +153,7 @@ Comportements:
 ### `bgp.vpnv4`
 - **Type**: bool
 - **Requis**: non
-- **Rôle**: si `true`, le script génère MP-BGP vpnv4 sur les PE.
+- **Rôle**: si `true`, le générateur produit MP-BGP vpnv4 sur les PE.
 
 ### `bgp.peering`
 
@@ -231,7 +245,7 @@ Chaque VRF associe un nom (sur PE) à un client:
 | `mode` | string | non | `asn_vrfid`, `asn_hash` | Construction RD. |
 | `base` | int | non | ex: `100` | Base de l’ID VRF (mode `asn_vrfid`). |
 
-Le script génère un RD **unique par VRF** (recommandé). Il ne génère pas de RD “par route”.
+Le générateur produit un RD **unique par VRF** (recommandé). Il ne produit pas de RD “par route”.
 
 ### RT: `vpn_services.rt`
 
@@ -241,7 +255,7 @@ Le script génère un RD **unique par VRF** (recommandé). Il ne génère pas de
 
 ## `pe_ce`
 
-Ce bloc documente l’intention, mais le script implémente actuellement le cas eBGP CE-PE.
+Ce bloc documente l’intention, mais `cisco_intent` implémente actuellement le cas eBGP CE-PE.
 
 ```json
 "pe_ce": {
@@ -251,8 +265,8 @@ Ce bloc documente l’intention, mais le script implémente actuellement le cas 
 ```
 
 Champs:
-- `routing`: attendu `ebgp`
-- `addressing.prefix`: utilisé comme fallback si `addressing.ce_pe_prefix` manque.
+- `routing`: attendu `ebgp` (documentation du scénario lab).
+- `addressing` dans ce bloc est informatif ; le préfixe CE-PE effectif est **`addressing.ce_pe_prefix`** à la racine.
 
 ## `lan`
 
@@ -313,13 +327,4 @@ Le VLAN effectif est `vlan_base + site_index`.
 
 Notes:
 - `redistribute_connected` utilise une route-map qui match **uniquement** l’interface LAN (pour éviter d’annoncer le lien CE-PE).
-
-## Rétro-compatibilité (intents historiques)
-
-Le script normalise certains champs historiques pour rester compatible:
-- `underlay.igp.area_design` → `underlay.igp.area.mode`
-- `underlay.mpls.enabled_on` → `underlay.mpls.interfaces.mode` (approximation vers `all_core_links`)
-- `bgp.route_reflector` → `bgp.route_reflectors.nodes`
-- `vpn_services.rt_strategy` → `vpn_services.rt.strategy`
-- `vpn_services.rd_strategy` est ignoré/supprimé
 

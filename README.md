@@ -4,17 +4,20 @@ Automatisation de la generation de configurations Cisco IOS pour un lab MPLS/BGP
 
 ## Contenu du depot
 
-- `script/script_intent_to_configs.py` : genere les fichiers `*.cfg` depuis un intent JSON.
-- `script/sync_gns3_startup_configs.py` : copie les configs generees vers les `startup-config` attendus par GNS3 (Dynamips).
-- `script/Configs/` : sorties de generation (`Configs-YYYYMMDD-HHMMSS/`).
-- `gns3/` : projets GNS3 (ex: `projet_gns3_1`).
+- `cisco_intent/` : package Python (generateur, diff modifs, push/sync GNS3).
+- Point d'entree unique : `python -m cisco_intent <sous-commande> ...` (depuis la racine du depot, ou avec `PYTHONPATH` sur la racine).
+- `intent/` : fichiers intent JSON d'exemple (`Intent.v4.json`, etc.).
+- `Configs/` : sorties de generation (`Configs-YYYYMMDD-HHMMSS/`).
+- `modifs/` : sorties du diff (`Modifs-YYYYMMDD-HHMMSS/`), cree au besoin.
+- `gns3/` : projets GNS3 (ex: `projet/`).
 - `docs/` : documentation du sujet et du format d'intent.
 
 ## Prerequis
 
 - Python 3.10+ (ou version recente compatible).
+- Dependances : `pip install -r requirements.txt` (ou `./dependencies.sh` / `dependencies.bat`).
 - Un projet GNS3 present dans `gns3/<nom_du_projet>/`.
-- Un fichier intent JSON (exemple: `script/Intent.v4.json`).
+- Un fichier intent JSON (exemple: `intent/Intent.v4.json`).
 
 ## Workflow recommande
 
@@ -28,85 +31,119 @@ Automatisation de la generation de configurations Cisco IOS pour un lab MPLS/BGP
 Depuis la racine du projet:
 
 ```bash
-python "script/script_intent_to_configs.py" "script/Intent.v4.json"
+python -m cisco_intent generate intent/Intent.v4.json
 ```
 
-Le script cree un nouveau dossier:
+Le programme cree un nouveau dossier:
 
-- `script/Configs/Configs-YYYYMMDD-HHMMSS/`
+- `Configs/Configs-YYYYMMDD-HHMMSS/`
 
 Ce dossier contient:
 
 - les fichiers `*.cfg` des routeurs
 - une copie de l'intent utilise
 
-## 2) Synchroniser vers GNS3
+### Option `--push` (configs completes en telnet)
 
-Le script de sync prend un **argument positionnel obligatoire** pour le dossier projet GNS3:
+Apres generation reussie, tu peux enchainer le push telnet vers GNS3 sans passer par la sous-commande `push` :
 
 ```bash
-python "script/sync_gns3_startup_configs.py" gns3/projet_gns3_1
+python -m cisco_intent generate intent/Intent.v4.json \
+  --push --gns3-project gns3/projet
 ```
 
-Par defaut, le script reconstruit automatiquement:
+Options utiles : `--push-only PE1,P2`, `--push-dry-run`, `--push-write-memory`, `--push-timeout`, `--push-workers` (voir `python -m cisco_intent generate -h`).
 
-- `gns3-file` => `<project_root>/<nom_du_dossier>.gns3` (ex: `gns3/projet_gns3_1/projet_gns3_1.gns3`)
+## 2) Synchroniser vers GNS3
+
+La sous-commande `sync-startup` prend un **argument positionnel obligatoire** pour le dossier projet GNS3:
+
+```bash
+python -m cisco_intent sync-startup gns3/projet
+```
+
+Par defaut, le programme reconstruit automatiquement:
+
+- `gns3-file` => `<project_root>/<nom_du_dossier>.gns3` (ex: `gns3/projet/projet.gns3`)
 
 ### Options utiles
 
 - Dry-run (affiche sans ecrire):
 
 ```bash
-python "script/sync_gns3_startup_configs.py" gns3/projet_gns3_1 --dry-run
+python -m cisco_intent sync-startup gns3/projet --dry-run
 ```
 
 - Continuer meme si certaines configs source manquent:
 
 ```bash
-python "script/sync_gns3_startup_configs.py" gns3/projet_gns3_1 --no-strict
+python -m cisco_intent sync-startup gns3/projet --no-strict
 ```
 
 - Chemins personnalises (si besoin):
 
 ```bash
-python "script/sync_gns3_startup_configs.py" \
-  --gns3-file "gns3/projet_gns3_1/projet_gns3_1.gns3" \
-  --project-root "gns3/projet_gns3_1" \
-  --configs-base "script/Configs"
+python -m cisco_intent sync-startup \
+  --gns3-file "gns3/projet/projet.gns3" \
+  --project-root "gns3/projet" \
+  --configs-base "Configs"
 ```
 
 ## Documentation complementaire
 
-- Sujet / checklist: `docs/NAS_Project.md`
-- Intent v4: `docs/intent/README.md`
-- Schema intent: `docs/intent/schema.md`
+- **Index et CLI** : [`docs/README.md`](docs/README.md)
+- Sujet / checklist : [`docs/NAS_Project.md`](docs/NAS_Project.md)
+- Intent v4 : [`docs/intent/README.md`](docs/intent/README.md) (schema, exemples, FAQ)
 
 ## Notes
 
 - Le mapping routeur `<name>.cfg` -> startup-config est deduit via le fichier `.gns3` (node_id + dynamips_id).
-- Le script de sync utilise automatiquement le dernier dossier `Configs-YYYYMMDD-HHMMSS` dans `script/Configs`.
+- La commande `sync-startup` utilise automatiquement le dernier dossier `Configs-YYYYMMDD-HHMMSS` dans `Configs/` (racine du depot).
 
 ## 3) Modifications a chaud (diff -> Modifs-*)
 
-Le script `script/intent_diff_to_modifs.py`:
-- execute d'abord le generateur (`script/script_intent_to_configs.py`) avec l'intent NEW
-- compare les configs OLD vs NEW (par blocs IOS) et genere des **commandes de modification** dans `script/modifs/Modifs-YYYYMMDD-HHMMSS/`
+La sous-commande `diff`:
+
+- execute d'abord le generateur avec l'intent NEW
+- compare les configs OLD vs NEW (par blocs IOS) et genere des **commandes de modification** dans `modifs/Modifs-YYYYMMDD-HHMMSS/`
 - emet les suppressions (`no ...` / `default interface ...`) pour eviter le **config ghosting**
 - n'emet jamais de commandes dangereuses (reload / write erase / etc.)
 
 Exemple (depuis la racine du projet):
 
 ```bash
-python "script/intent_diff_to_modifs.py" \
-  --old-intent "script/Intent.v4.json" \
-  --new-intent "script/Intent.v4.json" \
+python -m cisco_intent diff \
+  --old-intent "intent/Intent.v4.json" \
+  --new-intent "intent/Intent.v4.json" \
   --only PE1
 ```
 
 ### Push des modifs en telnet (GNS3 consoles)
 
-Apres generation, pousser un fichier de modifs (ou tout le dossier) via:
+En une commande apres le diff (dossier `Modifs-*` produit puis push telnet) :
 
 ```bash
-python "script/push_gns3_configs.py" gns3/projet_gns3_1 "script/modifs/Modifs-YYYYMMDD-HHMMSS" --only PE1
+python -m cisco_intent diff \
+  --new-intent intent/Intent.v4.NEW.example.json \
+  --push --gns3-project gns3/projet
+```
+
+`--only` filtre a la fois les fichiers de modifs et les cibles du push. `--push-only` sert seulement au push si tu veux un sous-ensemble different (rare).
+
+Avec `--dry-run` sur le diff, le push est ignore.
+
+Sinon, commande separee (equivalent) :
+
+```bash
+python -m cisco_intent push gns3/projet "modifs/Modifs-YYYYMMDD-HHMMSS" --only PE1
+```
+
+### Autres sous-commandes
+
+```bash
+python -m cisco_intent --help
+python -m cisco_intent generate -h
+python -m cisco_intent diff -h
+python -m cisco_intent push -h
+python -m cisco_intent sync-startup -h
 ```

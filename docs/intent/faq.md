@@ -2,9 +2,9 @@
 
 ## À quoi servait `autogen_rules` ? Est-ce utile ?
 
-Dans l’historique du projet, `autogen_rules` décrivait l’idée d’une allocation (loopbacks, p2p, LAN, CE-PE) “par stratégie”.
+`autogen_rules` était une idée de schéma pour décrire une allocation (loopbacks, p2p, LAN, CE-PE) « par stratégie », sans implémentation dans `cisco_intent`.
 
-Dans le générateur actuel:
+Dans le générateur actuel :
 - les allocations sont **déjà déterminées par le code** (itération sur les nœuds/liens/sites)
 - `autogen_rules` n’était **pas consommé**
 
@@ -12,7 +12,7 @@ Conclusion:
 - **inutile** tant qu’il n’y a pas d’implémentation réelle derrière
 - il a été retiré pour éviter la confusion
 
-Si un jour tu veux réintroduire l’idée, il faut que le script supporte réellement plusieurs stratégies d’allocation (ordre stable, “random seed”, par rôle, etc.).
+Si un jour tu veux réintroduire l’idée, il faut que le générateur (`cisco_intent`) supporte réellement plusieurs stratégies d’allocation (ordre stable, “random seed”, par rôle, etc.).
 
 ## Le `type` dans `links[]` est-il pertinent ?
 
@@ -26,13 +26,10 @@ En pratique:
 - l’area OSPF est soit globale (`single_area`), soit explicite par lien (`igp_area`)
 - MPLS est soit global (`all_core_links`), soit explicite par lien (`mpls`)
 
-## `underlay.igp.area_design` / `enabled_on` étaient-ils pertinents ?
+## Champs underlay IGP / MPLS à utiliser
 
-Historiquement ils existaient dans l’intent mais n’étaient pas appliqués.
-
-En v4.0:
-- `underlay.igp.area_design` est remplacé par **`underlay.igp.area.mode`** et est **implémenté**.
-- `mpls.enabled_on` est remplacé par **`mpls.interfaces.mode`** et est **implémenté**.
+- Aires OSPF : **`underlay.igp.area.mode`** (`single_area` ou `explicit`, avec `igp_area` par lien si besoin).
+- MPLS sur les liens core : **`underlay.mpls.enabled`** et **`underlay.mpls.interfaces.mode`** (`all_core_links` ou `explicit`, avec `mpls` par lien si besoin).
 
 ## “RR clients” en iBGP, c’est quoi ?
 
@@ -84,7 +81,32 @@ Méthodes d’annonce BGP:
 - `network_statement`: ajoute `network ... mask ...` (le plus “propre” et déterministe)
 - `redistribute_connected`: redistribue connected, mais filtré par route-map (match interface LAN) pour éviter d’annoncer le lien CE-PE
 
-## Est-ce que le script peut traiter d’autres protocoles/stratégies ?
+## Où sont les fichiers intent et les sorties ?
+
+- **Intents** : répertoire [`intent/`](../../intent/) à la racine du dépôt (ex. `Intent.v4.json`). Tu peux ajouter `intent/examples/` pour des variantes locales.
+- **Configs complètes** : `Configs/Configs-YYYYMMDD-HHMMSS/` (créé par `generate`).
+- **Modifs (diff)** : `modifs/Modifs-YYYYMMDD-HHMMSS/` (créé par `diff`).
+
+Ces chemins par défaut sont relatifs à la **racine du dépôt** (`cisco_intent.paths.PROJECT_ROOT`).
+
+## Différence entre `push` (telnet) et `sync-startup` ?
+
+- **`push`** : envoie le contenu des `.cfg` sur les **consoles telnet** GNS3 — les VMs/routeurs doivent être **déjà démarrés**. Adapté au **chaud** (y compris les fichiers de **modifs** produits par `diff`).
+- **`sync-startup`** : copie les `.cfg` du **dernier** run `Configs-*` vers les fichiers **startup-config** Dynamips sur disque — utile pour un **prochain démarrage à froid** dans GNS3.
+
+## `--push` sur `generate` / `diff` vs sous-commande `push` ?
+
+- **`generate … --push --gns3-project DIR`** : après une génération réussie, enchaîne le même mécanisme que `push` sur le dossier `Configs-*` créé.
+- **`diff … --push --gns3-project DIR`** : après écriture des modifs, pousse le dossier `modifs/Modifs-*` en telnet.
+- **`push PROJET DOSSIER_CFG`** : équivalent explicite quand tu choisis toi-même le dossier de `.cfg`.
+
+Options communes : `--push-only`, `--push-dry-run`, `--push-write-memory`, etc. (`python -m cisco_intent generate -h` / `diff -h`).
+
+## `diff --dry-run` et `--push` ?
+
+Avec **`--dry-run`**, le diff **n’écrit pas** les modifs sur disque : **`--push` est ignoré** (rien de cohérent à envoyer). Enlever `--dry-run` pour produire les fichiers puis pousser, ou lancer `push` séparément ensuite.
+
+## Est-ce que le générateur peut traiter d’autres protocoles/stratégies ?
 
 Oui, le schéma est conçu pour évoluer. Aujourd’hui, le générateur supporte déjà:
 - IGP: `ospf` (complet) + `isis` (support minimal)

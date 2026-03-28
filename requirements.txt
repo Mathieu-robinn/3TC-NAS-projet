@@ -1,0 +1,3 @@
+# Python 3.10+ recommandé (asyncio, typing).
+# Utilisé par cisco_intent.gns3_push (telnet vers consoles GNS3).
+telnetlib3>=4.0.0,<5
