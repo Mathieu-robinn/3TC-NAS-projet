@@ -34,7 +34,7 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cisco_intent.allocation import (
     _enrich_core_alloc_with_underlay,
@@ -421,10 +421,21 @@ def gen_core_router(
     return config
 
 
-def generate_configs(intent_path: Path) -> Tuple[int, Optional[Path]]:
+def generate_configs(
+    intent_path: Path,
+    *,
+    only_nodes: Optional[Set[str]] = None,
+    fill_from_run_dir: Optional[Path] = None,
+) -> Tuple[int, Optional[Path]]:
     """
     Génère les .cfg dans Configs/Configs-YYYYMMDD-HHMMSS/ (racine projet)
     et copie l'intent dans ce répertoire.
+
+    Si ``only_nodes`` et ``fill_from_run_dir`` sont fournis (cas ``diff --only``) :
+    seuls les nœuds listés sont régénérés ; pour les autres, on copie
+    ``<nom>.cfg`` depuis ``fill_from_run_dir`` lorsqu'il existe (sinon génération
+    comme d'habitude). Ainsi un run NEW reste aligné sur OLD pour les équipements
+    non concernés par la modif à chaud.
 
     Retourne (code_de_sortie, run_dir) : run_dir est le dossier Configs-* créé si succès, sinon None.
     """
@@ -433,6 +444,13 @@ def generate_configs(intent_path: Path) -> Tuple[int, Optional[Path]]:
         intent = normalize_intent(load_intent(intent_path))
         validate_intent(intent)
 
+        if only_nodes is not None:
+            if fill_from_run_dir is None:
+                raise ValueError("fill_from_run_dir est requis lorsque only_nodes est défini")
+            fill_from_run_dir = fill_from_run_dir.resolve()
+            if not fill_from_run_dir.is_dir():
+                raise ValueError(f"Dossier source des configs introuvable: {fill_from_run_dir}")
+
         addr = intent["addressing"]
         lan_cfg = intent["lan"]
         customers = intent.get("customers", [])
@@ -440,6 +458,19 @@ def generate_configs(intent_path: Path) -> Tuple[int, Optional[Path]]:
 
         run_dir = make_configs_run_dir()
         shutil.copy2(intent_path, run_dir / intent_path.name)
+
+        def try_copy_unchanged(name: str) -> bool:
+            """Copie depuis le run précédent si ce nœud n'est pas dans ``only_nodes``."""
+            if only_nodes is None or name in only_nodes:
+                return False
+            assert fill_from_run_dir is not None
+            src = fill_from_run_dir / f"{name}.cfg"
+            if not src.is_file():
+                return False
+            dst = run_dir / f"{name}.cfg"
+            shutil.copy2(src, dst)
+            print(f"[COPY] {dst}")
+            return True
 
         # Un tour par AS du fichier intent (souvent un seul AS dans les labs)
         for _, as_data in intent["autonomous_systems"].items():
@@ -456,6 +487,8 @@ def generate_configs(intent_path: Path) -> Tuple[int, Optional[Path]]:
             cust_lans = alloc_customer_lans(customers, lan_cfg)
 
             for node, meta in as_data.get("nodes", {}).items():
+                if try_copy_unchanged(node):
+                    continue
                 role = meta["role"]
                 config = gen_core_router(
                     node, role, as_data, asn, loopbacks, core_alloc, customers, vpn, cust_alloc
@@ -467,6 +500,8 @@ def generate_configs(intent_path: Path) -> Tuple[int, Optional[Path]]:
             for cust in customers:
                 for site in cust.get("sites", []):
                     ce_name = site["ce"]
+                    if try_copy_unchanged(ce_name):
+                        continue
                     config = gen_ce(site, cust, cust_alloc, cust_lans, asn, lan_cfg)
                     path = run_dir / f"{ce_name}.cfg"
                     path.write_text(config, encoding="utf-8")

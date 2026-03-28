@@ -12,7 +12,8 @@ Idée :
 
 Flux typique :
   1. Déterminer le dossier ``Configs-*`` pour OLD (dernier run, ou chemin explicite).
-  2. Régénérer NEW à partir d'un nouvel intent (``run_generator``).
+  2. Régénérer NEW à partir d'un nouvel intent (``run_generator``). Avec ``--only``,
+     les autres ``*.cfg`` sont copiés depuis le run OLD pour garder un dossier NEW cohérent.
   3. Parser chaque paire de ``<node>.cfg`` en blocs (global vs ``interface`` / ``router``…).
   4. ``diff_cfg`` produit la liste de lignes ; écriture dans ``modifs/Modifs-*``.
 
@@ -107,14 +108,27 @@ def find_intent_in_run_dir(run_dir: Path) -> Path:
     return intents[0]
 
 
-def run_generator(new_intent: Path) -> None:
-    """Lance ``generate_configs`` sur l'intent donné ; lève si le code de retour est non nul."""
+def run_generator(
+    new_intent: Path,
+    *,
+    only_nodes: Optional[Set[str]] = None,
+    fill_from_run_dir: Optional[Path] = None,
+) -> None:
+    """
+    Lance ``generate_configs`` sur l'intent donné ; lève si le code de retour est non nul.
+
+    Avec ``only_nodes`` + ``fill_from_run_dir`` (ex. ``diff --only``), les .cfg hors liste
+    sont copiés depuis le run OLD pour que le dossier Configs-* NEW reflète seulement les
+    nœuds réellement régénérés.
+    """
     if not new_intent.exists():
         raise FileNotFoundError(f"Intent NEW introuvable: {new_intent}")
     from cisco_intent.generator import generate_configs
 
     _eprint(f"[INFO] Génération configs pour: {new_intent}")
-    rc, _ = generate_configs(new_intent)
+    if only_nodes:
+        _eprint(f"[INFO] Copie des .cfg non listés depuis: {fill_from_run_dir}")
+    rc, _ = generate_configs(new_intent, only_nodes=only_nodes, fill_from_run_dir=fill_from_run_dir)
     if rc != 0:
         raise RuntimeError("Génération configs échouée")
 
@@ -513,7 +527,12 @@ def main(argv: Sequence[str]) -> int:
         default=None,
         help="Base de sortie des runs Modifs-* (défaut: modifs/ à la racine du dépôt)",
     )
-    ap.add_argument("--only", type=str, default=None, help="Liste de nodes (noms) séparés par virgule")
+    ap.add_argument(
+        "--only",
+        type=str,
+        default=None,
+        help="Nœuds dont on régénère le .cfg ; les autres sont copiés depuis OLD (même dossier Configs-* cohérent pour un prochain diff)",
+    )
     ap.add_argument("--dry-run", action="store_true", help="N'écrit rien, affiche un résumé et le volume de diffs")
     add_push_cli_arguments(ap)
     args = ap.parse_args(list(argv))
@@ -551,7 +570,10 @@ def main(argv: Sequence[str]) -> int:
 
     # Deux appels à ``generate_configs`` dans la même seconde partageraient le même nom de dossier.
     time.sleep(1.1)
-    run_generator(new_intent)
+    if only:
+        run_generator(new_intent, only_nodes=only, fill_from_run_dir=old_run_dir)
+    else:
+        run_generator(new_intent)
 
     if args.new_configs_dir is not None:
         ncd = args.new_configs_dir
