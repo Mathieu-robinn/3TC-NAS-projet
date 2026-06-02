@@ -6,7 +6,6 @@
     "p2p_pool": "10.0.0.0/16",
     "customer_pool": "172.16.0.0/16",
     "p2p_prefix": 30,
-    "customer_prefix": 24,
     "ce_pe_prefix": 30
   },
   "autonomous_systems": {

@@ -62,10 +62,7 @@ Champs:
 | `p2p_pool` | string (CIDR) | oui | `10.0.0.0/16` | Pool des liens core P2P. |
 | `customer_pool` | string (CIDR) | oui | `172.16.0.0/16` | Pool des liens CE-PE (accès client). |
 | `p2p_prefix` | int | oui | `30` | Préfixe des sous-réseaux P2P core. |
-| `ce_pe_prefix` | int | oui | `30` | Préfixe des sous-réseaux CE-PE (seule source utilisée par le générateur). |
-
-Notes:
-- `customer_prefix` peut apparaître dans des intents d’exemple mais n’est pas consommé par `cisco_intent`.
+| `ce_pe_prefix` | int | oui | `30` | Préfixe des sous-réseaux CE-PE. |
 
 ## `autonomous_systems`
 

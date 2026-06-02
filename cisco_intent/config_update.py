@@ -39,7 +39,6 @@ import re
 import shutil
 import sys
 import tempfile
-import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -66,7 +65,9 @@ BANNED_CMD_RE = re.compile(
 
 def _now_stamp() -> str:
     """Horodatage compact pour nommer un run ``Modifs-YYYYMMDD-HHMMSS``."""
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    # On garde les microsecondes pour éviter deux noms identiques si deux archives
+    # sont créées dans la même seconde.
+    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
 
 
 def _eprint(msg: str) -> None:
@@ -161,14 +162,20 @@ def run_generator(
 
 def iter_effective_cfg_lines(cfg_text: str) -> Iterable[str]:
     """Ignore commentaires ``!``, lignes vides, ``end`` final ; refuse les commandes dangereuses."""
+    # Une config générée contient beaucoup de séparateurs "!" et finit par "end".
+    # Pour comparer deux configs, ces lignes ne sont pas utiles: elles ne représentent
+    # pas une vraie commande de configuration à ajouter/supprimer.
     raw_lines = [ln.rstrip("\r\n") for ln in cfg_text.splitlines()]
 
+    # On enlève d'abord les lignes vides/commentaires en fin de fichier.
     i = len(raw_lines) - 1
     while i >= 0 and (not raw_lines[i].strip() or raw_lines[i].lstrip().startswith("!")):
         i -= 1
     raw_lines = raw_lines[: i + 1]
 
     if raw_lines and raw_lines[-1].strip().lower() == "end":
+        # "end" sert juste à quitter le mode config; il ne doit pas apparaître dans
+        # un diff de modifications à pousser.
         raw_lines = raw_lines[:-1]
 
     for ln in raw_lines:
@@ -178,6 +185,8 @@ def iter_effective_cfg_lines(cfg_text: str) -> Iterable[str]:
         if s.startswith("!"):
             continue
         if BANNED_CMD_RE.search(s):
+            # Protection: on ne veut jamais qu'un update génère ou accepte un reload,
+            # erase, configure replace, etc.
             raise ValueError(f"Commande interdite détectée dans une config: {s!r}")
         yield ln.rstrip()
 
@@ -188,7 +197,6 @@ def is_mode_header(line: str) -> bool:
     starters = (
         "interface ",
         "router ",
-        "ip vrf ",
         "vrf definition ",
         "route-map ",
         "ip access-list ",
@@ -212,6 +220,15 @@ def parse_cfg(cfg_text: str) -> ParsedCfg:
     Découpe une config en lignes « globales » et blocs nommés (clé = première ligne du bloc,
     ex. ``interface Gi0/0``). Les sous-lignes indentées appartiennent au bloc courant.
     """
+    # Exemple IOS:
+    #   hostname PE1                  -> global_lines
+    #   interface Gi1/0               -> header de bloc
+    #    ip address 10.0.0.1 ...      -> sous-ligne du bloc interface
+    #   router bgp 1                  -> header de bloc
+    #    neighbor ...                 -> sous-ligne du bloc router bgp
+    #
+    # Cette séparation est essentielle: supprimer "ip address" doit se faire dans
+    # le mode "interface ...", pas au niveau global.
     global_lines: List[str] = []
     blocks_acc: DefaultDict[str, List[str]] = defaultdict(list)
 
@@ -220,6 +237,7 @@ def parse_cfg(cfg_text: str) -> ParsedCfg:
 
     def flush_block() -> None:
         """Enregistre le bloc courant dans ``blocks_acc`` puis réinitialise l'état."""
+        # Quand on rencontre un nouveau header, on doit sauvegarder le bloc précédent.
         nonlocal current_header, current_sublines
         if current_header is None:
             return
@@ -230,6 +248,8 @@ def parse_cfg(cfg_text: str) -> ParsedCfg:
 
     for ln in iter_effective_cfg_lines(cfg_text):
         if ln[:1].isspace():
+            # Une ligne indentée appartient au bloc courant. Si elle arrive sans
+            # bloc courant, on la traite comme globale pour ne pas la perdre.
             if current_header is None:
                 global_lines.append(ln.strip())
             else:
@@ -237,10 +257,13 @@ def parse_cfg(cfg_text: str) -> ParsedCfg:
             continue
 
         if is_mode_header(ln):
+            # Une ligne non indentée qui commence par "interface ", "router ", etc.
+            # ouvre un nouveau bloc IOS.
             flush_block()
             current_header = ln.strip()
             current_sublines = []
         else:
+            # Ligne non indentée qui n'est pas un sous-mode: commande globale.
             flush_block()
             global_lines.append(ln.strip())
 
@@ -264,7 +287,7 @@ def _sort_interface_patch_additions(add_lines: List[str]) -> List[str]:
         s = ln.strip().lower()
         if s.startswith("description ") or s.startswith("encapsulation "):
             return (0, ln)
-        if s.startswith("vrf forwarding ") or s.startswith("ip vrf forwarding "):
+        if s.startswith("vrf forwarding "):
             return (1, ln)
         if (
             s.startswith("ip address ")
@@ -278,14 +301,12 @@ def _sort_interface_patch_additions(add_lines: List[str]) -> List[str]:
 
 
 def _removed_vrf_names(old_headers: Set[str], new_headers: Set[str]) -> Set[str]:
-    """Noms de VRF dont le bloc disparaît du NEW (``vrf definition`` / ``ip vrf``)."""
+    """Noms de VRF dont le bloc ``vrf definition`` disparaît du NEW."""
     names: Set[str] = set()
     for h in old_headers - new_headers:
         hs = h.strip()
         hll = hs.lower()
         if hll.startswith("vrf definition "):
-            names.add(hs.split(None, 2)[2])
-        elif hll.startswith("ip vrf "):
             names.add(hs.split(None, 2)[2])
     return names
 
@@ -311,14 +332,6 @@ def _should_skip_negate_ip_after_vrf_deleted(
         p0 = parts[0].lower()
         if p0 == "vrf" and parts[1].lower() == "forwarding" and parts[2] in removed_vrf_names:
             return True
-        if (
-            p0 == "ip"
-            and len(parts) >= 4
-            and parts[1].lower() == "vrf"
-            and parts[2].lower() == "forwarding"
-            and parts[3] in removed_vrf_names
-        ):
-            return True
     return False
 
 
@@ -337,8 +350,6 @@ def removal_for_block_header(header: str) -> List[str]:
     if hl.startswith("route-map "):
         return [f"no {h}"]
     if hl.startswith("vrf definition "):
-        return [f"no {h}"]
-    if hl.startswith("ip vrf "):
         return [f"no {h}"]
     if hl.startswith("ip access-list "):
         return [f"no {h}"]
@@ -365,12 +376,18 @@ def diff_cfg(old_cfg: ParsedCfg, new_cfg: ParsedCfg) -> List[str]:
     n'émet pas les ``no ip address`` / ``no ipv6 address`` correspondants sur ces interfaces
     (sinon « Invalid address »).
     """
+    # La sortie "out" est une suite de commandes IOS qui transforme OLD en NEW.
+    # Elle est ensuite écrite dans un fichier <routeur>.cfg de modifications.
     out: List[str] = []
 
+    # Les headers sont les blocs IOS: interface X, router bgp Y, vrf definition Z...
     old_headers = set(old_cfg.blocks.keys())
     new_headers = set(new_cfg.blocks.keys())
     intersect = old_headers & new_headers
 
+    # Cas spécial BGP: si un bloc router bgp change, on préfère le supprimer puis
+    # le recréer à la fin. C'est plus brutal, mais évite certains états IOS bizarres
+    # avec VRF/RD et address-families.
     bgp_headers_full_replace: List[str] = []
     for header in intersect:
         if not header.lower().startswith("router bgp "):
@@ -383,6 +400,9 @@ def diff_cfg(old_cfg: ParsedCfg, new_cfg: ParsedCfg) -> List[str]:
 
     removed_vrf_names = _removed_vrf_names(old_headers, new_headers)
 
+    # Commandes globales: comparaison ensembliste simple.
+    # Si une ligne globale était dans OLD mais plus dans NEW -> "no <ligne>".
+    # Si une ligne globale est nouvelle -> on l'ajoute.
     old_globals = set(old_cfg.global_lines)
     new_globals = set(new_cfg.global_lines)
     globals_to_remove = sorted(old_globals - new_globals)
@@ -394,12 +414,15 @@ def diff_cfg(old_cfg: ParsedCfg, new_cfg: ParsedCfg) -> List[str]:
         out.append(ln)
 
     for header in bgp_headers_full_replace:
+        # On supprime BGP avant de toucher aux VRF pour éviter les conflits RD/VRF.
         out.extend(removal_for_block_header(header))
 
     for header in sorted(old_headers - new_headers):
+        # Bloc entier disparu: interface supprimée/default, VRF supprimée, route-map supprimée, etc.
         out.extend(removal_for_block_header(header))
 
     for header in sorted(new_headers - old_headers):
+        # Bloc entièrement nouveau: on entre dans le bloc et on rejoue toutes ses sous-lignes.
         out.append(header)
         for sub in new_cfg.blocks[header]:
             out.append(sub)
@@ -419,28 +442,36 @@ def diff_cfg(old_cfg: ParsedCfg, new_cfg: ParsedCfg) -> List[str]:
             continue
 
         if header.lower().startswith("router bgp "):
+            # Les changements BGP ont déjà été traités via remplacement complet.
             continue
 
         out.append(header)
         if header.lower().startswith("interface "):
+            # Dans un bloc interface, l'ordre des commandes compte souvent.
+            # Exemple: "vrf forwarding" doit arriver avant "ip address".
             for sub in to_remove:
                 if _should_skip_negate_ip_after_vrf_deleted(sub, old_sub, removed_vrf_names):
                     continue
                 out.append(negate_cmd(sub))
             to_add = _sort_interface_patch_additions(to_add)
         else:
+            # Pour les autres blocs, une suppression simple "no <commande>" suffit
+            # dans la plupart des cas.
             for sub in to_remove:
                 out.append(negate_cmd(sub))
         for sub in to_add:
             out.append(sub)
 
     for header in bgp_headers_full_replace:
+        # On recrée BGP à la fin, après les changements VRF/interfaces.
         out.append(header)
         for sub in new_cfg.blocks[header]:
             out.append(sub)
 
     for ln in out:
         if BANNED_CMD_RE.search(ln.strip()):
+            # Deuxième filet de sécurité: même si une commande interdite est générée
+            # par le diff, on bloque avant écriture/push.
             raise ValueError(f"Commande interdite générée par update: {ln!r}")
 
     return out
@@ -476,11 +507,18 @@ def write_modifs_run(
     Hors ``dry_run`` : écrit les modifs dans ``modifs_output_dir`` (ex. répertoire temporaire),
     archive ``configs/<topology>/backup/modifs/Modifs-<timestamp>.zip``. En ``dry_run``, pas de fichiers sur disque.
     """
+    # Cette fonction ne génère pas les configs complètes. Elle compare deux dossiers
+    # déjà générés:
+    #   old_run_dir = ancienne référence
+    #   new_run_dir = nouvelle génération
+    #
+    # Elle produit ensuite un petit fichier de commandes par routeur.
     stamp = _now_stamp()
     zip_name = f"Modifs-{stamp}.zip"
 
     nodes = sorted(set(list_nodes_in_run_dir(old_run_dir)) | set(list_nodes_in_run_dir(new_run_dir)), key=str.lower)
     if only is not None:
+        # Si --only est utilisé, on limite l'écriture des modifs aux routeurs demandés.
         nodes = [n for n in nodes if n in only]
 
     summary = {
@@ -494,6 +532,8 @@ def write_modifs_run(
     }
 
     if dry_run:
+        # En dry-run, on ne crée pas de dossier temporaire et on affiche juste le
+        # nombre de lignes qui seraient générées par routeur.
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         for n in nodes:
             old_cfg_p = old_run_dir / f"{n}.cfg"
@@ -509,6 +549,8 @@ def write_modifs_run(
     out_dir = modifs_output_dir.resolve()
 
     prepare_dir_for_generation(out_dir)
+    # On garde les intents OLD/NEW dans l'archive de modifs pour comprendre plus tard
+    # d'où viennent les commandes générées.
     (out_dir / "OLD.intent.json").write_text(old_intent_path.read_text(encoding="utf-8"), encoding="utf-8")
     (out_dir / "NEW.intent.json").write_text(new_intent_path.read_text(encoding="utf-8"), encoding="utf-8")
     (out_dir / "metadata.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -615,9 +657,6 @@ def main(argv: Sequence[str]) -> int:
     except ValueError as e:
         _eprint(str(e))
         return 1
-
-    # Espacer deux zip ``backup/full_configs`` si ``--old-intent`` a déclenché une génération.
-    time.sleep(1.1)
 
     new_out: Optional[Path] = None
     if args.new_configs_dir is not None:

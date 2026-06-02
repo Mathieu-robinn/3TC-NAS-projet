@@ -15,7 +15,7 @@ Composants principaux :
   - ``iter_cfg_lines`` : filtre commentaires et ``end`` final (on sort du config mode nous-mêmes).
   - ``TelnetIOSSession`` : boucle asyncio ``lire le tampon → attendre un prompt → envoyer``.
   - ``push_one`` : une routeur, un fichier.
-  - ``run_push`` : planifie tous les nœuds (séquentiel ou threads + ``asyncio.run`` par tâche).
+  - ``run_push`` : planifie tous les nœuds dans une seule boucle asyncio, avec limite de concurrence.
 
 Regex sur flux binaire :
   IOS renvoie du texte bruité (syslog, retours chariot). Les motifs cherchent la *fin*
@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import re
 import sys
@@ -527,8 +526,8 @@ def run_push(
     Pousse les <name>.cfg de cfg_dir vers les consoles telnet du projet GNS3.
     Même logique que la sous-commande ``push`` (réutilisable depuis generate/update).
 
-    Parallélisme : chaque worker lance ``asyncio.run(push_one(...))`` dans un thread
-    (telnetlib3 est asyncio ; plusieurs boucles event en parallèle = un thread par push).
+    Parallélisme : une seule boucle asyncio pilote toutes les sessions, avec un sémaphore
+    qui limite le nombre de pushes simultanés à ``workers``.
     """
     if workers < 1:
         _eprint("[ERR] --workers must be >= 1")
@@ -579,7 +578,6 @@ def run_push(
             print(f"[DRY] {n.name:<12} localhost:{n.port} cfg={status} ({cfg.name})")
         return 0
 
-    results: List[PushResult] = []
     do_write_memory = bool(write_memory) and not bool(no_write)
 
     push_kwargs = {
@@ -589,32 +587,41 @@ def run_push(
         "verbose": bool(verbose),
     }
 
-    if workers == 1:
-        # Un seul event loop : simple et prévisible pour le lab
-        for n, cfg in planned:
-            print(f"[PUSH] {n.name} -> localhost:{n.port} ({cfg.name})")
-            res = asyncio.run(push_one(n, cfg, **push_kwargs))
-            results.append(res)
-            print(f"[{res.status}] {n.name} {res.detail}".rstrip())
-    else:
-        print(f"[INFO] Parallel mode enabled: workers={workers}")
-        for n, cfg in planned:
-            print(f"[QUEUE] {n.name} -> localhost:{n.port} ({cfg.name})")
+    async def run_all_pushes() -> List[PushResult]:
+        # Le sémaphore limite le nombre de routeurs configurés en même temps.
+        # Exemple: workers=3 signifie "au maximum 3 sessions telnet simultanées".
+        # C'est plus léger qu'un thread par routeur, car telnetlib3 est déjà asyncio.
+        semaphore = asyncio.Semaphore(workers)
 
-        # Chaque future exécute sa propre boucle asyncio (isolation par thread)
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_map = {
-                executor.submit(asyncio.run, push_one(n, cfg, **push_kwargs)): (n, cfg)
-                for n, cfg in planned
-            }
-            for fut in as_completed(future_map):
-                n, _cfg = future_map[fut]
+        async def run_one(n: NodeConsole, cfg: Path) -> PushResult:
+            # Chaque tâche attend son tour dans le sémaphore, puis pousse la config
+            # d'un seul routeur.
+            async with semaphore:
+                label = "PUSH" if workers == 1 else "QUEUE"
+                print(f"[{label}] {n.name} -> localhost:{n.port} ({cfg.name})")
                 try:
-                    res = fut.result()
+                    # push_one contient toute la logique telnet: wake, enable,
+                    # configure terminal, envoi des lignes, write memory optionnel.
+                    res = await push_one(n, cfg, **push_kwargs)
                 except Exception as e:
-                    res = PushResult(node=n.name, port=n.port, status="FAIL(thread)", detail=str(e))
-                results.append(res)
+                    # Filet de sécurité: push_one retourne déjà souvent PushResult,
+                    # mais si une exception imprévue sort, on la transforme en résultat
+                    # lisible au lieu de casser tout gather().
+                    res = PushResult(node=n.name, port=n.port, status="FAIL(task)", detail=str(e))
                 print(f"[{res.status}] {res.node} {res.detail}".rstrip())
+                return res
+
+        if workers > 1:
+            print(f"[INFO] Parallel mode enabled: workers={workers}")
+        # On crée une tâche par routeur prévu. Le sémaphore, pas le nombre de tâches,
+        # contrôle la vraie concurrence.
+        tasks = [asyncio.create_task(run_one(n, cfg)) for n, cfg in planned]
+        # gather attend toutes les tâches et conserve l'ordre de la liste tasks.
+        return list(await asyncio.gather(*tasks))
+
+    # run_push est une fonction synchrone appelée par la CLI; on démarre donc ici
+    # la boucle asyncio qui exécute les pushes.
+    results = asyncio.run(run_all_pushes())
 
     ok = sum(1 for r in results if r.status == "OK")
     fail = sum(1 for r in results if r.status.startswith("FAIL"))

@@ -92,11 +92,20 @@ def prepare_dir_for_generation(path: Path) -> Path:
     """
     Crée ``path`` s'il manque, supprime tous les fichiers directs (pas les sous-dossiers)
     pour une écriture de génération propre.
+
+    Les sous-dossiers sont conservés volontairement: les dossiers de topologie
+    contiennent aussi ``backup/`` et parfois des espaces de travail. Les outputs de
+    génération attendus à ce niveau sont des fichiers directs ``*.cfg`` et ``Intent*.json``.
     """
+    # On résout le chemin pour travailler avec un chemin absolu et éviter les
+    # surprises si le répertoire courant change pendant l'exécution.
     path = path.resolve()
     path.mkdir(parents=True, exist_ok=True)
     for p in list(path.iterdir()):
         if p.is_file():
+            # On ne supprime que les fichiers directs générés au run précédent:
+            # PE1.cfg, P1.cfg, Intent_*.json, metadata.json, etc.
+            # Les sous-dossiers sont laissés en place volontairement.
             p.unlink()
     return path
 

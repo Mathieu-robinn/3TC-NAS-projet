@@ -29,7 +29,9 @@ Pour étendre :
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import sys
 import traceback
@@ -42,7 +44,7 @@ from cisco_intent.allocation import (
     alloc_customer_access_links,
     alloc_customer_lans,
     alloc_loopbacks,
-    get_node_core_links,
+    build_core_adjacency,
     wildcard_from_mask,
 )
 from cisco_intent.intent import (
@@ -68,6 +70,14 @@ from cisco_intent.paths import (
 
 def gen_header(node: str) -> str:
     """Bloc d'en-tête IOS commun : version, hostname, services de base."""
+    # Cette fonction renvoie du texte IOS brut. Toutes les fonctions gen_* suivent
+    # le même principe: elles construisent une chaîne qui sera écrite telle quelle
+    # dans le fichier final <hostname>.cfg.
+    #
+    # Le header est commun aux P, PE et CE:
+    #   - hostname: nom du routeur
+    #   - no ip domain-lookup: évite les délais quand on tape une mauvaise commande
+    #   - ip cef: nécessaire/utile pour MPLS et forwarding moderne
     return (
         f"!\n"
         f"version 15.2\n"
@@ -83,6 +93,9 @@ def gen_header(node: str) -> str:
 
 def gen_loopback(node: str, loopbacks: Dict[str, str]) -> str:
     """Interface Loopback0 /32 pour le routeur ``node`` à partir du dict ``loopbacks``."""
+    # Loopback0 est une interface logique toujours up tant que le routeur tourne.
+    # Dans ce lab, elle sert notamment de router-id IGP/BGP/LDP et de source pour
+    # les sessions iBGP entre PE.
     ip = loopbacks[node]
     return (
         f"interface Loopback0\n"
@@ -92,11 +105,17 @@ def gen_loopback(node: str, loopbacks: Dict[str, str]) -> str:
     )
 
 
-def gen_core_interfaces(node: str, core_alloc: List[Dict[str, Any]]) -> str:
+def gen_core_interfaces(node: str, node_core_links: List[Dict[str, Any]]) -> str:
     """Interfaces physiques du core pour ``node`` (IP, description, ``mpls ip`` si activé)."""
+    # node_core_links contient seulement les liens du routeur en cours.
+    # Exemple pour P1: liens vers PE1, P2, P3, etc.
+    #
+    # Chaque entrée contient déjà l'interface locale, l'IP locale, le voisin, le
+    # masque et le flag MPLS éventuel.
     config = ""
-    for link in get_node_core_links(node, core_alloc):
+    for link in node_core_links:
         if not link["interface"]:
+            # Sans nom d'interface, on ne peut pas savoir où poser l'adresse IP.
             raise ValueError(f"Interface manquante sur un lien core pour {node} -> {link['neighbor']}")
         config += (
             f"interface {link['interface']}\n"
@@ -105,18 +124,32 @@ def gen_core_interfaces(node: str, core_alloc: List[Dict[str, Any]]) -> str:
             f" no shutdown\n"
         )
         if link.get("mpls"):
+            # Cette commande active MPLS sur l'interface. Elle n'est présente que si
+            # la politique underlay le demande.
             config += " mpls ip\n"
         config += "!\n"
     return config
 
 
-def gen_ospf(node: str, core_alloc: List[Dict[str, Any]], loopbacks: Dict[str, str], area_mode: str = "single_area") -> str:
+def gen_ospf(
+    node: str,
+    node_core_links: List[Dict[str, Any]],
+    loopbacks: Dict[str, str],
+    area_mode: str = "single_area",
+) -> str:
     """Process OSPF 1 : router-id loopback, networks core et loopback selon ``area_mode``."""
+    # On génère OSPF avec des "network statements". C'est simple et lisible pour un
+    # lab IOS: on déclare la loopback et chaque réseau point-à-point du core.
     router_id = loopbacks[node]
     config = f"router ospf 1\n router-id {router_id}\n"
+    # La loopback reste toujours en area 0, même si les liens core utilisent des
+    # areas explicites.
     config += f" network {router_id} 0.0.0.0 area 0\n"
-    for link in get_node_core_links(node, core_alloc):
+    for link in node_core_links:
         wildcard = wildcard_from_mask(link["mask"])
+        # area_mode:
+        #   - single_area: tout en area 0
+        #   - explicit: l'area vient de chaque lien dans l'intent
         area = int(link.get("igp_area", 0)) if area_mode != "single_area" else 0
         config += f" network {link['network']} {wildcard} area {area}\n"
     config += "!\n"
@@ -127,6 +160,8 @@ def gen_ospf(node: str, core_alloc: List[Dict[str, Any]], loopbacks: Dict[str, s
 
 def gen_mpls() -> str:
     """Commandes globales MPLS LDP (router-id forcé sur Loopback0)."""
+    # Attention: ce bloc active MPLS/LDP globalement. Le fait qu'un lien transporte
+    # vraiment MPLS dépend aussi du "mpls ip" posé interface par interface.
     return (
         "mpls ip\n"
         "mpls label protocol ldp\n"
@@ -137,6 +172,9 @@ def gen_mpls() -> str:
 
 def isis_net_from_loopback(loopback_ip: str, area: str = "49.0001") -> str:
     """Construit une chaîne NET IS-IS à partir de l'IPv4 du loopback (system ID dérivé des octets)."""
+    # IS-IS n'utilise pas une adresse IP comme router-id; il utilise un NET.
+    # Pour rester déterministe, on fabrique un system-id depuis les octets de la
+    # loopback. Exemple très simplifié: 1.0.0.1 -> 0100.0001.0001.
     octets = [int(x) for x in loopback_ip.split(".")]
     if len(octets) != 4:
         raise ValueError(f"Loopback IPv4 invalide pour NET IS-IS: {loopback_ip}")
@@ -155,6 +193,12 @@ def gen_ibgp(
     rr_nodes: List[str],
 ) -> str:
     """Bloc ``router bgp`` + address-family vpnv4 (full mesh ou route reflector selon ``peering_cfg``)."""
+    # Ce bloc concerne uniquement les PE. Les routeurs P n'ont pas de BGP VPNv4:
+    # ils transportent seulement le trafic MPLS dans le core.
+    #
+    # Deux grandes stratégies:
+    #   - full_mesh: chaque PE parle à tous les autres PE
+    #   - rr_clients / rr_redundant: les PE clients parlent aux route-reflectors
     router_id = loopbacks[node]
     strategy = peering_cfg.get("strategy", "rr_clients")
 
@@ -167,9 +211,13 @@ def gen_ibgp(
 
     def add_neighbor(ip: str) -> str:
         """Lignes ``neighbor`` iBGP avec update-source Loopback0."""
+        # remote-as = ASN core, car c'est de l'iBGP.
+        # update-source Loopback0 garantit que la session reste stable tant que
+        # l'IGP sait joindre la loopback.
         return f" neighbor {ip} remote-as {asn}\n neighbor {ip} update-source Loopback0\n"
 
     if strategy == "full_mesh":
+        # Full-mesh: simple et correct pour quelques PE, moins scalable si on en a beaucoup.
         for pe in all_pe:
             if pe == node:
                 continue
@@ -178,11 +226,13 @@ def gen_ibgp(
         if not rr_nodes:
             raise ValueError("route_reflectors.nodes vide alors que strategy RR est demandée")
         if node in rr_nodes:
+            # Le route-reflector configure des voisins vers tous les autres PE.
             for pe in all_pe:
                 if pe == node:
                     continue
                 config += add_neighbor(loopbacks[pe])
         else:
+            # Un PE client ne configure que ses voisins vers les route-reflectors.
             for rr in rr_nodes:
                 config += add_neighbor(loopbacks[rr])
     else:
@@ -190,6 +240,8 @@ def gen_ibgp(
 
     config += " !\n address-family vpnv4\n"
     if strategy == "full_mesh":
+        # En vpnv4, il faut activer explicitement chaque voisin et envoyer les
+        # communautés étendues, sinon les RT ne circulent pas.
         for pe in all_pe:
             if pe == node:
                 continue
@@ -197,6 +249,8 @@ def gen_ibgp(
             config += f"  neighbor {pe_ip} activate\n  neighbor {pe_ip} send-community both\n"
     else:
         if node in rr_nodes:
+            # Sur un RR, les non-RR deviennent route-reflector-client. Les autres
+            # RRs ne sont pas marqués client pour éviter une réflexion incorrecte.
             for pe in all_pe:
                 if pe == node:
                     continue
@@ -208,6 +262,7 @@ def gen_ibgp(
                 if pe not in rr_nodes:
                     config += f"  neighbor {pe_ip} route-reflector-client\n"
         else:
+            # Côté client RR, on active simplement les voisins RRs dans vpnv4.
             for rr in rr_nodes:
                 rr_ip = loopbacks[rr]
                 config += f"  neighbor {rr_ip} activate\n  neighbor {rr_ip} send-community both\n"
@@ -219,22 +274,34 @@ def gen_ibgp(
 
 def _compute_rd_rt(vpn_services: Dict[str, Any], core_asn: int, vrf_name: str, vrf_index: int) -> Tuple[str, str]:
     """Calcule la valeur RD et RT (ou marqueur ``AUTO_PER_CUSTOMER_ASN``) pour une VRF."""
+    # RD = Route Distinguisher: rend les routes VPN uniques dans BGP vpnv4.
+    # RT = Route Target: communauté qui dit quelles routes exporter/importer.
+    #
+    # Dans un lab simple, RD et RT peuvent avoir la même valeur. En production,
+    # ils ont des rôles différents, mais cette génération reste lisible.
     rd_cfg = vpn_services.get("rd", {}) or {}
     rd_mode = rd_cfg.get("mode", "asn_vrfid")
     rd_base = int(rd_cfg.get("base", 100))
     vrf_id = rd_base + vrf_index
     if rd_mode == "asn_vrfid":
+        # Mode le plus lisible: ASN core + numéro de VRF.
         rd = f"{core_asn}:{vrf_id}"
     elif rd_mode == "asn_hash":
-        rd = f"{core_asn}:{abs(hash(vrf_name)) % 65535}"
+        # On utilise hashlib au lieu de hash(), car hash() change entre processus
+        # Python. Ici, le même nom de VRF donnera toujours le même nombre.
+        digest = hashlib.blake2s(vrf_name.encode("utf-8"), digest_size=2).digest()
+        rd = f"{core_asn}:{int.from_bytes(digest, 'big')}"
     else:
         raise ValueError(f"vpn_services.rd.mode invalide: {rd_mode}")
 
     rt_cfg = vpn_services.get("rt", {}) or {}
     rt_strategy = rt_cfg.get("strategy", "auto_per_vrf")
     if rt_strategy == "auto_per_vrf":
+        # RT unique par VRF: simple pour isoler chaque client.
         rt = f"{core_asn}:{vrf_id}"
     elif rt_strategy == "auto_per_customer_asn":
+        # On ne connaît pas forcément l'ASN client dans cette fonction. On renvoie
+        # donc un marqueur que gen_vrf_and_pe_ce remplacera ensuite.
         rt = "AUTO_PER_CUSTOMER_ASN"
     else:
         raise ValueError(f"vpn_services.rt.strategy invalide: {rt_strategy}")
@@ -244,34 +311,49 @@ def _compute_rd_rt(vpn_services: Dict[str, Any], core_asn: int, vrf_name: str, v
 
 def _ce_needs_allowas_in(cust: Dict[str, Any]) -> bool:
     """True si le client a plusieurs sites (même ASN partagé) : le CE doit accepter l'ASN local dans l'AS_PATH."""
+    # Quand un client a plusieurs sites dans le même ASN, une route peut revenir
+    # vers un CE avec son propre ASN dans l'AS_PATH. IOS rejette ça par défaut;
+    # allowas-in autorise ce cas côté CE.
     sites = cust.get("sites") or []
     return len(sites) > 1
 
 
 def gen_vrf_and_pe_ce(
     node: str,
-    customers: List[Dict[str, Any]],
+    customers_by_name: Dict[str, Dict[str, Any]],
+    sites_by_customer_pe: Dict[Tuple[str, str], List[Dict[str, Any]]],
     vpn_services: Dict[str, Any],
     cust_alloc: Dict[Tuple[str, str, str], Dict[str, Any]],
     core_asn: int,
 ) -> str:
     """Pour le PE ``node`` : vrf definition, interfaces PE-CE en VRF, voisins eBGP par VRF (sans as-override)."""
+    # Cette fonction est appelée PE par PE.
+    # Elle parcourt toutes les VRF déclarées dans vpn_services, mais ne configure
+    # sur ce PE que les VRF qui ont au moins un site client raccordé à ce PE.
+    #
+    # Les index customers_by_name et sites_by_customer_pe évitent de reparcourir
+    # toute la liste des clients et sites à chaque VRF.
     config = ""
     vrfs = vpn_services.get("vrfs", [])
 
     for vrf_index, vrf in enumerate(vrfs, start=1):
         cust_name = vrf["customer"]
         vrf_name = vrf.get("name", cust_name)
-        cust = next((c for c in customers if c["name"] == cust_name), None)
+        cust = customers_by_name.get(cust_name)
         if not cust:
+            # Si la validation laisse passer une VRF qui référence un client absent,
+            # on ignore ici pour ne pas casser toute la génération. Idéalement, ce
+            # cas devrait être signalé plus haut par validate_intent.
             continue
 
-        sites_on_this_pe = [s for s in cust.get("sites", []) if s["pe"] == node]
+        sites_on_this_pe = sites_by_customer_pe.get((cust_name, node), [])
         if not sites_on_this_pe:
+            # La VRF existe peut-être ailleurs, mais ce PE n'a aucun CE de ce client.
             continue
 
         rd, rt = _compute_rd_rt(vpn_services, core_asn, vrf_name, vrf_index)
         if rt == "AUTO_PER_CUSTOMER_ASN":
+            # Remplacement du marqueur par une valeur basée sur l'ASN client.
             rt = f"{core_asn}:{cust['asn']}"
 
         config += (
@@ -287,6 +369,8 @@ def gen_vrf_and_pe_ce(
         for site in sites_on_this_pe:
             alloc = cust_alloc[(cust_name, site["ce"], node)]
             if not alloc["pe_if"]:
+                # Une interface PE manquante est bloquante: impossible de savoir où
+                # appliquer "vrf forwarding" et l'adresse PE-CE.
                 raise ValueError(f"Interface PE manquante pour {cust_name}/{site['ce']} sur {node}")
             config += (
                 f"interface {alloc['pe_if']}\n"
@@ -326,6 +410,10 @@ def gen_ce(
 
     ``allowas-in`` vers le PE est ajouté seulement si le client a plusieurs sites (même ASN).
     """
+    # Un CE est plus simple qu'un PE:
+    #   - une interface vers le PE
+    #   - éventuellement un LAN de test
+    #   - une session eBGP vers le PE
     ce_name = site["ce"]
     pe_name = site["pe"]
     alloc = cust_alloc[(cust["name"], ce_name, pe_name)]
@@ -333,6 +421,7 @@ def gen_ce(
     ce_if = alloc["ce_if"] or "GigabitEthernet0/0"
 
     config = gen_header(ce_name)
+    # Interface CE -> PE.
     config += (
         f"interface {ce_if}\n"
         f" description to_{pe_name}\n"
@@ -342,6 +431,8 @@ def gen_ce(
     )
 
     if lan:
+        # Interface LAN optionnelle. Elle peut être Loopback0, interface physique,
+        # ou subinterface VLAN selon le champ lan.type.
         config += f"interface {lan['interface']}\n"
         if lan.get("encapsulation"):
             config += f" encapsulation dot1Q {lan['encapsulation']}\n"
@@ -362,13 +453,17 @@ def gen_ce(
         f"  neighbor {alloc['pe_ip']} activate\n"
     )
     if _ce_needs_allowas_in(cust):
+        # Nécessaire pour les clients multi-sites qui partagent le même ASN.
         config += f"  neighbor {alloc['pe_ip']} allowas-in\n"
 
     advertise = lan_cfg.get("bgp", {}).get("advertise", True)
     method = lan_cfg.get("bgp", {}).get("method", "network_statement")
     if lan and advertise and method == "network_statement":
+        # Méthode précise: on annonce uniquement le LAN calculé.
         config += f"  network {lan['ip']} mask {lan['mask']}\n"
     elif lan and advertise and method == "redistribute_connected":
+        # Méthode plus générique mais filtrée: la route-map limite la redistribution
+        # à l'interface LAN, pour ne pas annoncer le lien CE-PE.
         config += (
             f"  redistribute connected route-map RM_LAN_ONLY\n"
             f" exit-address-family\n"
@@ -395,23 +490,30 @@ def gen_core_router(
     as_data: Dict[str, Any],
     asn: int,
     loopbacks: Dict[str, str],
-    core_alloc: List[Dict[str, Any]],
-    customers: List[Dict[str, Any]],
+    node_core_links: List[Dict[str, Any]],
+    customers_by_name: Dict[str, Dict[str, Any]],
+    sites_by_customer_pe: Dict[Tuple[str, str], List[Dict[str, Any]]],
     vpn_services: Dict[str, Any],
     cust_alloc: Dict[Tuple[str, str, str], Dict[str, Any]],
 ) -> str:
     """Assemble la config IOS d'un routeur P ou PE (IGP, MPLS, iBGP/VRF si PE et vpnv4)."""
+    # Fonction d'assemblage principale pour le core.
+    # "role" décide de la partie VPN:
+    #   - P  : underlay seulement
+    #   - PE : underlay + BGP vpnv4 + VRF client
     igp = as_data.get("underlay", {}).get("igp", {})
     all_pe = get_nodes_by_role(as_data, "PE")
     area_mode = _deep_get(igp, ["area", "mode"], "single_area")
 
     config = gen_header(node)
     config += gen_loopback(node, loopbacks)
-    config += gen_core_interfaces(node, core_alloc)
+    config += gen_core_interfaces(node, node_core_links)
 
     if igp.get("protocol") == "ospf":
-        config += gen_ospf(node, core_alloc, loopbacks, area_mode=area_mode)
+        # OSPF: génération complète avec network statements.
+        config += gen_ospf(node, node_core_links, loopbacks, area_mode=area_mode)
     elif igp.get("protocol") == "isis":
+        # IS-IS: support minimal mais fonctionnel pour le lab.
         isis_net = isis_net_from_loopback(loopbacks[node])
         config += (
             "router isis 1\n"
@@ -420,19 +522,29 @@ def gen_core_router(
             "!\n"
         )
         config += "interface Loopback0\n ip router isis 1\n!\n"
-        for link in get_node_core_links(node, core_alloc):
+        for link in node_core_links:
             if link["interface"]:
                 config += f"interface {link['interface']}\n ip router isis 1\n!\n"
 
     if as_data.get("underlay", {}).get("mpls", {}).get("enabled", False):
+        # Bloc MPLS/LDP global. Les interfaces MPLS ont déjà été marquées dans
+        # gen_core_interfaces via link["mpls"].
         config += gen_mpls()
 
     if role == "PE" and as_data.get("bgp", {}).get("vpnv4"):
+        # Seuls les PE participent à l'overlay VPN.
         bgp = as_data.get("bgp", {}) or {}
         peering_cfg = bgp.get("peering", {}) or {}
         rr_nodes = _deep_get(bgp, ["route_reflectors", "nodes"], []) or []
         config += gen_ibgp(node, asn, loopbacks, all_pe, peering_cfg, rr_nodes)
-        config += gen_vrf_and_pe_ce(node, customers, vpn_services, cust_alloc, asn)
+        config += gen_vrf_and_pe_ce(
+            node,
+            customers_by_name,
+            sites_by_customer_pe,
+            vpn_services,
+            cust_alloc,
+            asn,
+        )
 
     config += "end\n"
     return config
@@ -460,15 +572,29 @@ def generate_configs(
     Un zip d'archive est ajouté sous ``configs/<topology>/backup/full_configs/Configs-<timestamp>.zip``.
 
     Retourne (code_de_sortie, out_dir) : out_dir est le dossier cible si succès, sinon None.
+
+    En cas d'erreur, la stack trace complète est affichée seulement si
+    ``CISCO_INTENT_DEBUG`` est défini dans l'environnement.
     """
+    # Cette fonction est appelée par:
+    #   - la commande generate
+    #   - la commande update pour générer OLD/NEW
+    #   - les tests éventuels
+    #
+    # Elle retourne un code de sortie plutôt que de lever l'exception au niveau CLI,
+    # pour garder une interface simple avec cli.py.
     intent_path = intent_path.resolve()
     try:
         if intent is None:
+            # Cas normal CLI generate: on lit le fichier ici.
             intent = normalize_intent(load_intent(intent_path))
             validate_intent(intent)
+        # Si intent est fourni, il est supposé déjà validé par l'appelant.
         topology = topology_name_from_intent(intent)
 
         if only_nodes is not None:
+            # Cas update --only: seuls certains routeurs sont recalculés. Les autres
+            # sont copiés depuis fill_from_run_dir pour garder un jeu complet.
             if fill_from_run_dir is None:
                 raise ValueError("fill_from_run_dir est requis lorsque only_nodes est défini")
             fill_from_run_dir = fill_from_run_dir.resolve()
@@ -479,9 +605,22 @@ def generate_configs(
         lan_cfg = intent["lan"]
         customers = intent.get("customers", [])
         vpn = intent.get("vpn_services", {})
+        # Index de lecture rapide:
+        #   customers_by_name["CUST1"] -> objet client
+        #   sites_by_customer_pe[("CUST1", "PE1")] -> sites CUST1 attachés à PE1
+        customers_by_name = {cust["name"]: cust for cust in customers}
+        sites_by_customer_pe: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        for cust in customers:
+            cust_name = cust["name"]
+            for site in cust.get("sites", []):
+                sites_by_customer_pe.setdefault((cust_name, site["pe"]), []).append(site)
 
         out_base = output_dir if output_dir is not None else live_dir(topology)
+        # prepare_dir_for_generation nettoie les fichiers directs du dossier cible
+        # avant d'écrire les nouvelles configs.
         run_dir = prepare_dir_for_generation(out_base)
+        # On copie l'intent utilisé dans le dossier de sortie pour pouvoir retrouver
+        # exactement ce qui a généré les .cfg.
         shutil.copy2(intent_path, run_dir / intent_path.name)
 
         def try_copy_unchanged(name: str) -> bool:
@@ -503,10 +642,13 @@ def generate_configs(
             all_nodes = get_all_nodes(as_data)
             core_links = normalize_core_links(as_data.get("links", []))
 
+            # Calculs réseau pour cet AS.
             loopbacks = alloc_loopbacks(all_nodes, addr["loopback_pool"])
             core_alloc_raw = alloc_core_links(core_links, addr["p2p_pool"], addr["p2p_prefix"])
             core_alloc = _enrich_core_alloc_with_underlay(core_alloc_raw, core_links, as_data)
+            core_adjacency = build_core_adjacency(core_alloc)
 
+            # Liens client et LANs de test.
             ce_pe_prefix = int(addr["ce_pe_prefix"])
             cust_alloc = alloc_customer_access_links(customers, addr["customer_pool"], ce_pe_prefix)
             cust_lans = alloc_customer_lans(customers, lan_cfg)
@@ -515,8 +657,19 @@ def generate_configs(
                 if try_copy_unchanged(node):
                     continue
                 role = meta["role"]
+                # On donne à gen_core_router uniquement les liens locaux du node,
+                # pas toute la topologie.
                 config = gen_core_router(
-                    node, role, as_data, asn, loopbacks, core_alloc, customers, vpn, cust_alloc
+                    node,
+                    role,
+                    as_data,
+                    asn,
+                    loopbacks,
+                    core_adjacency.get(node, []),
+                    customers_by_name,
+                    sites_by_customer_pe,
+                    vpn,
+                    cust_alloc,
                 )
                 path = run_dir / f"{node}.cfg"
                 path.write_text(config, encoding="utf-8")
@@ -527,6 +680,8 @@ def generate_configs(
                     ce_name = site["ce"]
                     if try_copy_unchanged(ce_name):
                         continue
+                    # Les CE sont générés après le core car ils utilisent les mêmes
+                    # allocations CE-PE et LAN calculées plus haut.
                     config = gen_ce(site, cust, cust_alloc, cust_lans, asn, lan_cfg)
                     path = run_dir / f"{ce_name}.cfg"
                     path.write_text(config, encoding="utf-8")
@@ -534,6 +689,8 @@ def generate_configs(
 
         print(f"\nTerminé. Configs et backup intent dans {run_dir}")
         try:
+            # Archive automatique du run complet. Même si l'archive échoue, les .cfg
+            # générés restent valides; on affiche donc seulement un warning.
             zip_dest = backup_full_configs_dir(topology) / f"Configs-{configs_backup_stamp()}.zip"
             zip_run_dir(run_dir, zip_dest)
             print(f"[ZIP] {zip_dest}")
@@ -542,5 +699,6 @@ def generate_configs(
         return 0, run_dir
     except Exception as e:
         print(f"Erreur: {e}", file=sys.stderr)
-        traceback.print_exc()
+        if os.environ.get("CISCO_INTENT_DEBUG"):
+            traceback.print_exc()
         return 1, None

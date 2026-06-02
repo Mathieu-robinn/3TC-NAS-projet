@@ -1,31 +1,5 @@
 # FAQ — Intent.json (v4.0)
 
-## À quoi servait `autogen_rules` ? Est-ce utile ?
-
-`autogen_rules` était une idée de schéma pour décrire une allocation (loopbacks, p2p, LAN, CE-PE) « par stratégie », sans implémentation dans `cisco_intent`.
-
-Dans le générateur actuel :
-- les allocations sont **déjà déterminées par le code** (itération sur les nœuds/liens/sites)
-- `autogen_rules` n’était **pas consommé**
-
-Conclusion:
-- **inutile** tant qu’il n’y a pas d’implémentation réelle derrière
-- il a été retiré pour éviter la confusion
-
-Si un jour tu veux réintroduire l’idée, il faut que le générateur (`cisco_intent`) supporte réellement plusieurs stratégies d’allocation (ordre stable, “random seed”, par rôle, etc.).
-
-## Le `type` dans `links[]` est-il pertinent ?
-
-Dans la version actuelle du projet, non: il est retiré du schéma pour simplifier.
-
-Pourquoi:
-- les liens de l’intent sont tous des liens core
-- la logique “par type” n’apportait rien dans ce contexte
-
-En pratique:
-- l’area OSPF est soit globale (`single_area`), soit explicite par lien (`igp_area`)
-- MPLS est soit global (`all_core_links`), soit explicite par lien (`mpls`)
-
 ## Champs underlay IGP / MPLS à utiliser
 
 - Aires OSPF : **`underlay.igp.area.mode`** (`single_area` ou `explicit`, avec `igp_area` par lien si besoin).
