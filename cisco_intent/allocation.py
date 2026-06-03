@@ -14,8 +14,8 @@ Structures importantes :
     ``(nom_client, ce, pe)`` pour retrouver vite les paramètres d'un site.
 
 Enrichissement underlay :
-  ``_enrich_core_alloc_with_underlay`` ajoute à chaque lien l'aire OSPF et le flag MPLS
-  selon ``underlay.igp`` et ``underlay.mpls`` dans l'intent.
+  ``_enrich_core_alloc_with_underlay`` ajoute à chaque lien l'aire OSPF, le flag MPLS
+  et (si TE activé) ``te`` + ``rsvp_bandwidth`` selon ``underlay.igp`` / ``underlay.mpls``.
 
 Liens : ``generator.generate_configs`` appelle toutes ces fonctions après validation.
 
@@ -281,6 +281,8 @@ def build_core_adjacency(core_alloc: List[Dict[str, Any]]) -> Dict[str, List[Dic
                 "prefix_len": link["prefix_len"],
                 "igp_area": link.get("igp_area", 0),
                 "mpls": link.get("mpls", False),
+                "te": link.get("te", False),
+                "rsvp_bandwidth": link.get("rsvp_bandwidth", 0),
             }
         )
         # Vue locale depuis le routeur côté B.
@@ -295,6 +297,8 @@ def build_core_adjacency(core_alloc: List[Dict[str, Any]]) -> Dict[str, List[Dic
                 "prefix_len": link["prefix_len"],
                 "igp_area": link.get("igp_area", 0),
                 "mpls": link.get("mpls", False),
+                "te": link.get("te", False),
+                "rsvp_bandwidth": link.get("rsvp_bandwidth", 0),
             }
         )
     return adjacency
@@ -317,6 +321,9 @@ def _enrich_core_alloc_with_underlay(
     mpls_cfg = underlay.get("mpls", {}) or {}
     mpls_enabled = bool(mpls_cfg.get("enabled", False))
     mpls_mode = _deep_get(mpls_cfg, ["interfaces", "mode"], "all_core_links") if mpls_enabled else "disabled"
+    te_cfg = mpls_cfg.get("traffic_engineering", {}) or {}
+    te_enabled = bool(mpls_enabled and te_cfg.get("enabled", False))
+    rsvp_bw = int(te_cfg.get("rsvp_default_bandwidth", 0)) if te_enabled else 0
 
     for i, link_alloc in enumerate(alloc):
         link = core_links[i]
@@ -337,5 +344,12 @@ def _enrich_core_alloc_with_underlay(
                 link_alloc["mpls"] = bool(link.get("mpls", False))
             else:
                 raise ValueError(f"underlay.mpls.interfaces.mode invalide: {mpls_mode}")
+
+        if te_enabled and link_alloc["mpls"]:
+            # TE suit le périmètre MPLS : all_core_links ou explicit, jamais les liens sans mpls ip.
+            link_alloc["te"] = True
+            link_alloc["rsvp_bandwidth"] = rsvp_bw
+        else:
+            link_alloc["te"] = False
 
     return alloc

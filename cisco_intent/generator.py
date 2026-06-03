@@ -64,6 +64,13 @@ from cisco_intent.paths import (
     live_dir,
     prepare_dir_for_generation,
 )
+from cisco_intent.te import (
+    get_explicit_paths_for_node,
+    get_te_tunnels_for_node,
+    mpls_te_enabled,
+    resolve_explicit_path_hops,
+    tunnel_autoroute_announce,
+)
 
 
 # --- Blocs de texte IOS de base (hostname, loopback, interfaces core) ---
@@ -127,6 +134,10 @@ def gen_core_interfaces(node: str, node_core_links: List[Dict[str, Any]]) -> str
             # Cette commande active MPLS sur l'interface. Elle n'est présente que si
             # la politique underlay le demande.
             config += " mpls ip\n"
+        if link.get("te"):
+            # TE/RSVP sur les mêmes interfaces que ``mpls ip`` (voir allocation._enrich_core_alloc).
+            config += " mpls traffic-eng tunnels\n"
+            config += f" ip rsvp bandwidth {link['rsvp_bandwidth']}\n"
         config += "!\n"
     return config
 
@@ -136,6 +147,7 @@ def gen_ospf(
     node_core_links: List[Dict[str, Any]],
     loopbacks: Dict[str, str],
     area_mode: str = "single_area",
+    te_enabled: bool = False,
 ) -> str:
     """Process OSPF 1 : router-id loopback, networks core et loopback selon ``area_mode``."""
     # On génère OSPF avec des "network statements". C'est simple et lisible pour un
@@ -152,22 +164,79 @@ def gen_ospf(
         #   - explicit: l'area vient de chaque lien dans l'intent
         area = int(link.get("igp_area", 0)) if area_mode != "single_area" else 0
         config += f" network {link['network']} {wildcard} area {area}\n"
+    if te_enabled:
+        # Extensions OSPF TE : TEDB + annonce des liens RSVP (requis pour tunnels TE).
+        config += " mpls traffic-eng router-id Loopback0\n"
+        if area_mode == "single_area":
+            config += " mpls traffic-eng area 0\n"
+        else:
+            te_areas = {0}
+            for link in node_core_links:
+                te_areas.add(int(link.get("igp_area", 0)))
+            for area in sorted(te_areas):
+                config += f" mpls traffic-eng area {area}\n"
     config += "!\n"
     return config
 
 
 # --- IGP / MPLS (underlay) ---
 
-def gen_mpls() -> str:
-    """Commandes globales MPLS LDP (router-id forcé sur Loopback0)."""
+def gen_mpls(te_enabled: bool = False) -> str:
+    """Commandes globales MPLS LDP (router-id forcé sur Loopback0) ; TE optionnel."""
     # Attention: ce bloc active MPLS/LDP globalement. Le fait qu'un lien transporte
     # vraiment MPLS dépend aussi du "mpls ip" posé interface par interface.
-    return (
+    config = (
         "mpls ip\n"
         "mpls label protocol ldp\n"
         "mpls ldp router-id Loopback0 force\n"
-        "!\n"
     )
+    if te_enabled:
+        config += "mpls traffic-eng tunnels\n"
+    config += "!\n"
+    return config
+
+
+def gen_explicit_paths(
+    paths: List[Dict[str, Any]],
+    loopbacks: Dict[str, str],
+    source_node: str,
+) -> str:
+    """Chemins explicites TE (routeur tête uniquement) ; résout les hops nœud → loopback."""
+    config = ""
+    for path in paths:
+        name = path["name"]
+        hops = path.get("hops", [])
+        resolved = resolve_explicit_path_hops(hops, loopbacks, exclude_node=source_node)
+        config += f"ip explicit-path name {name} enable\n"
+        for ip in resolved:
+            config += f" next-address {ip}\n"
+        config += "!\n"
+    return config
+
+
+def gen_te_tunnels(
+    tunnels: List[Dict[str, Any]],
+    loopbacks: Dict[str, str],
+    te_cfg: Dict[str, Any],
+) -> str:
+    """Interfaces Tunnel MPLS-TE (routeur tête uniquement)."""
+    config = ""
+    for tun in tunnels:
+        tid = tun["id"]
+        dest_ip = loopbacks[tun["destination_node"]]
+        path_name = tun["path_option_name"]
+        config += (
+            f"interface Tunnel{tid}\n"
+            f" ip unnumbered Loopback0\n"
+            f" tunnel destination {dest_ip}\n"
+            f" tunnel mode mpls traffic-eng\n"
+            f" tunnel mpls traffic-eng path-option 1 explicit name {path_name}\n"
+        )
+        if tunnel_autoroute_announce(tun, te_cfg):
+            # Optionnel : injecte le tunnel dans OSPF (tracé IP = tracé MPLS si activé).
+            config += " tunnel mpls traffic-eng autoroute announce\n"
+        config += "!\n"
+    return config
 
 
 def isis_net_from_loopback(loopback_ip: str, area: str = "49.0001") -> str:
@@ -504,6 +573,8 @@ def gen_core_router(
     igp = as_data.get("underlay", {}).get("igp", {})
     all_pe = get_nodes_by_role(as_data, "PE")
     area_mode = _deep_get(igp, ["area", "mode"], "single_area")
+    mpls_enabled = bool(as_data.get("underlay", {}).get("mpls", {}).get("enabled", False))
+    te_enabled = mpls_te_enabled(as_data) if mpls_enabled else False
 
     config = gen_header(node)
     config += gen_loopback(node, loopbacks)
@@ -511,7 +582,9 @@ def gen_core_router(
 
     if igp.get("protocol") == "ospf":
         # OSPF: génération complète avec network statements.
-        config += gen_ospf(node, node_core_links, loopbacks, area_mode=area_mode)
+        config += gen_ospf(
+            node, node_core_links, loopbacks, area_mode=area_mode, te_enabled=te_enabled
+        )
     elif igp.get("protocol") == "isis":
         # IS-IS: support minimal mais fonctionnel pour le lab.
         isis_net = isis_net_from_loopback(loopbacks[node])
@@ -526,10 +599,20 @@ def gen_core_router(
             if link["interface"]:
                 config += f"interface {link['interface']}\n ip router isis 1\n!\n"
 
-    if as_data.get("underlay", {}).get("mpls", {}).get("enabled", False):
+    if mpls_enabled:
         # Bloc MPLS/LDP global. Les interfaces MPLS ont déjà été marquées dans
         # gen_core_interfaces via link["mpls"].
-        config += gen_mpls()
+        config += gen_mpls(te_enabled=te_enabled)
+
+        if te_enabled:
+            # Chemins/tunnels uniquement sur le PE ``source_node`` (pas sur P ni PE transit).
+            te_cfg = as_data.get("traffic_engineering", {}) or {}
+            node_paths = get_explicit_paths_for_node(node, te_cfg)
+            node_tunnels = get_te_tunnels_for_node(node, te_cfg)
+            if node_paths:
+                config += gen_explicit_paths(node_paths, loopbacks, source_node=node)
+            if node_tunnels:
+                config += gen_te_tunnels(node_tunnels, loopbacks, te_cfg)
 
     if role == "PE" and as_data.get("bgp", {}).get("vpnv4"):
         # Seuls les PE participent à l'overlay VPN.

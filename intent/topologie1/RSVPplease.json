@@ -1,0 +1,231 @@
+{
+  "intent_version": "4.0",
+  "name": "matopo",
+  "addressing": {
+    "loopback_pool": "9.0.0.0/8",
+    "p2p_pool": "15.0.0.0/16",
+    "customer_pool": "192.168.10.0/24",
+    "p2p_prefix": 30,
+    "ce_pe_prefix": 30
+  },
+  "autonomous_systems": {
+    "AS1": {
+      "asn": 42,
+      "nodes": {
+        "PE1": { "role": "PE" },
+        "PE2": { "role": "PE" },
+        "PE3": { "role": "PE" },
+        "P1": { "role": "P" },
+        "P2": { "role": "P" },
+        "P3": { "role": "P" },
+        "P4": { "role": "P" }
+      },
+      "links": [
+        {
+          "endpoints": [
+            { "node": "PE1", "interface": "GigabitEthernet4/0" },
+            { "node": "P1", "interface": "GigabitEthernet4/0" }
+          ]
+        },
+        {
+          "endpoints": [
+            { "node": "PE2", "interface": "GigabitEthernet4/0" },
+            { "node": "P3", "interface": "GigabitEthernet4/0" }
+          ]
+        },
+        {
+          "endpoints": [
+            { "node": "PE3", "interface": "GigabitEthernet4/0" },
+            { "node": "P2", "interface": "GigabitEthernet4/0" }
+          ]
+        },
+        {
+          "endpoints": [
+            { "node": "P1", "interface": "GigabitEthernet1/0" },
+            { "node": "P2", "interface": "GigabitEthernet1/0" }
+          ]
+        },
+        {
+          "endpoints": [
+            { "node": "P2", "interface": "GigabitEthernet2/0" },
+            { "node": "P3", "interface": "GigabitEthernet2/0" }
+          ]
+        },
+        {
+          "endpoints": [
+            { "node": "P3", "interface": "GigabitEthernet3/0" },
+            { "node": "P1", "interface": "GigabitEthernet3/0" }
+          ]
+        },
+        {
+          "endpoints": [
+            { "node": "P3", "interface": "GigabitEthernet1/0" },
+            { "node": "P4", "interface": "GigabitEthernet3/0" }
+          ]
+        },
+        {
+          "endpoints": [
+            { "node": "P4", "interface": "GigabitEthernet4/0" },
+            { "node": "PE2", "interface": "GigabitEthernet3/0" }
+          ]
+        }
+      ],
+      "underlay": {
+        "igp": {
+          "protocol": "ospf",
+          "area": {
+            "mode": "single_area"
+          }
+        },
+        "mpls": {
+          "enabled": true,
+          "label_distribution": "ldp",
+          "interfaces": {
+            "mode": "all_core_links"
+          },
+          "traffic_engineering": {
+            "enabled": true,
+            "rsvp_default_bandwidth": 1000
+          }
+        }
+      },
+      "traffic_engineering": {
+        "autoroute_announce": false,
+        "explicit_paths": [
+          {
+            "name": "LONG-PATH-TO-PE2",
+            "hops": ["P1", "P2", "P3", "P4", "PE2"]
+          }
+        ],
+        "tunnels": [
+          {
+            "id": 1,
+            "source_node": "PE1",
+            "destination_node": "PE2",
+            "path_option_name": "LONG-PATH-TO-PE2"
+          }
+        ]
+      },
+      "bgp": {
+        "type": "ibgp",
+        "vpnv4": true,
+        "route_reflectors": {
+          "nodes": [
+            "PE1"
+          ]
+        },
+        "peering": {
+          "strategy": "rr_clients",
+          "transport": "loopback"
+        }
+      }
+    }
+  },
+  "customers": [
+    {
+      "name": "CUST1",
+      "asn": 65241,
+      "sites": [
+        {
+          "ce": "CE1-1",
+          "pe": "PE1",
+          "link": {
+            "endpoints": [
+              { "node": "CE1-1", "interface": "GigabitEthernet1/0" },
+              { "node": "PE1", "interface": "GigabitEthernet1/0" }
+            ]
+          }
+        },
+        {
+          "ce": "CE1-2",
+          "pe": "PE2",
+          "link": {
+            "endpoints": [
+              { "node": "CE1-2", "interface": "GigabitEthernet1/0" },
+              { "node": "PE2", "interface": "GigabitEthernet1/0" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "CUST2",
+      "asn": 65122,
+      "sites": [
+        {
+          "ce": "CE2-1",
+          "pe": "PE1",
+          "link": {
+            "endpoints": [
+              { "node": "CE2-1", "interface": "GigabitEthernet1/0" },
+              { "node": "PE1", "interface": "GigabitEthernet2/0" }
+            ]
+          }
+        },
+        {
+          "ce": "CE2-2",
+          "pe": "PE3",
+          "link": {
+            "endpoints": [
+              { "node": "CE2-2", "interface": "GigabitEthernet1/0" },
+              { "node": "PE3", "interface": "GigabitEthernet1/0" }
+            ]
+          }
+        },
+        {
+          "ce": "CE2-3",
+          "pe": "PE2",
+          "link": {
+            "endpoints": [
+              { "node": "CE2-3", "interface": "GigabitEthernet1/0" },
+              { "node": "PE2", "interface": "GigabitEthernet2/0" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "vpn_services": {
+    "type": "l3vpn",
+    "rd": {
+      "mode": "asn_vrfid",
+      "base": 100
+    },
+    "rt": {
+      "strategy": "auto_per_vrf"
+    },
+    "vrfs": [
+      {
+        "name": "CUST1",
+        "customer": "CUST1"
+      },
+      {
+        "name": "CUST2",
+        "customer": "CUST2"
+      }
+    ]
+  },
+  "pe_ce": {
+    "routing": "ebgp",
+    "addressing": {
+      "strategy": "derived_from_customer_pool",
+      "prefix": 30
+    }
+  },
+  "lan": {
+    "type": "loopback",
+    "enabled": true,
+    "addressing": {
+      "base_pool": "10.0.0.0/8",
+      "prefix": 32,
+      "strategy": "per_site"
+    },
+    "naming": {
+      "pattern": "Loopback0"
+    },
+    "bgp": {
+      "advertise": true,
+      "method": "network_statement"
+    }
+  }
+}

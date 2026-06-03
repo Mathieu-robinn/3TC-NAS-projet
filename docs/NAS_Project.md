@@ -207,7 +207,7 @@ The repo ships a Python package **`cisco_intent`** driven by **`python -m cisco_
 - [x] CE attached networks can be advertised (LAN + BGP)
 - [ ] Validation evidence: no route leaking
 - [ ] Validation evidence: forwarding tests archived
-- [ ] Demo booked
+- [x] Demo booked
 
 ### Phase 4: Deeper
 
@@ -215,5 +215,5 @@ The repo ships a Python package **`cisco_intent`** driven by **`python -m cisco_
 - [ ] Site sharing (multiple RTs)
 - [ ] Internet services
 - [ ] Ingress TE for dual-connected CE
-- [ ] RSVP
+- [x] RSVP / MPLS-TE (génération + `update` à chaud) — voir [`intent/schema.md`](intent/schema.md), [`RSVPplease.json`](../intent/topologie1/RSVPplease.json)
 

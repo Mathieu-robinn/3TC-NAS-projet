@@ -6,7 +6,7 @@ Ce dépôt automatise la génération de configurations **Cisco IOS** (MPLS / BG
 
 | Élément | Rôle |
 |--------|------|
-| [`cisco_intent/`](../cisco_intent/) | Package Python : générateur, update, push, sync, reset |
+| [`cisco_intent/`](../cisco_intent/) | Package Python : générateur, update, push, sync, reset ; **`te.py`** = MPLS-TE/RSVP |
 | [`intent/`](../intent/) | Fichiers intent d’exemple (ex. `topologie1/Intent_*.json`) |
 | [`configs/<name>/`](../configs/) | **Par topologie** : `live/`, `staging/`, `scratch_old/`, `backup/` (zips). `<name>` = champ racine `name` de l’intent |
 | `configs/<name>/live/` | Sortie de `generate` : `*.cfg` + intent ; OLD par défaut de `update` (même `name`) |
@@ -57,11 +57,20 @@ python -m cisco_intent generate intent/topologie1/Intent_isis_rr_redunt.json
 python -m cisco_intent generate intent/topologie1/Intent_isis_rr_redunt.json --push --gns3-project gns3/projet
 ```
 
-**Diff puis push** des modifs
+**Diff puis push** des modifs (MPLS, TE/RSVP, BGP, VRF, etc.)
 
 ```bash
 python -m cisco_intent update --new-intent intent/topologie1/Intent_isis_rr_redunt.json --push --gns3-project gns3/projet
 ```
+
+**Activer ou modifier MPLS-TE / RSVP à chaud** (chemins explicites, tunnels, bande passante RSVP)
+
+```bash
+python -m cisco_intent update --new-intent intent/topologie1/RSVPplease.json --dry-run
+python -m cisco_intent update --new-intent intent/topologie1/RSVPplease.json --push --gns3-project gns3/mine
+```
+
+Voir [schéma intent — traffic_engineering](intent/schema.md#traffic_engineering-niveau-as) et [FAQ — TE à chaud](intent/faq.md#comment-activer-ou-modifier-le-te-à-chaud).
 
 **Préparer un démarrage à froid GNS3** (fichiers startup sur disque)
 

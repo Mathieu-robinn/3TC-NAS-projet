@@ -169,6 +169,66 @@ et `links[].igp_area`.
 
 et `links[].mpls`.
 
+## Exemple 3 — MPLS-TE / RSVP (chemins explicites + tunnel)
+
+Fichier livré : [`intent/topologie1/RSVPplease.json`](../../intent/topologie1/RSVPplease.json) (topologie `matopo`).
+
+Objectif :
+- Underlay OSPF + MPLS/LDP sur tous les liens core
+- **RSVP-TE** : bande passante, extensions OSPF TE, chemin explicite, tunnel PE1→PE2
+- Traceroute IP vs `traceroute mpls ipv4` **distincts** (`autoroute_announce: false` par défaut)
+
+Points clés :
+
+### Activer TE sous MPLS
+
+```json
+"mpls": {
+  "enabled": true,
+  "interfaces": { "mode": "all_core_links" },
+  "traffic_engineering": {
+    "enabled": true,
+    "rsvp_default_bandwidth": 1000
+  }
+}
+```
+
+### Chemins et tunnels (niveau AS)
+
+```json
+"traffic_engineering": {
+  "autoroute_announce": false,
+  "explicit_paths": [
+    { "name": "LONG-PATH-TO-PE2", "hops": ["P1", "P2", "P3", "P4", "PE2"] }
+  ],
+  "tunnels": [
+    {
+      "id": 1,
+      "source_node": "PE1",
+      "destination_node": "PE2",
+      "path_option_name": "LONG-PATH-TO-PE2"
+    }
+  ]
+}
+```
+
+Les noms dans `hops` sont résolus en **Loopback0** ; le `source_node` (`PE1`) est exclu automatiquement du chemin généré.
+
+### Génération initiale
+
+```bash
+python -m cisco_intent generate intent/topologie1/RSVPplease.json
+```
+
+### Modification à chaud (intent déjà déployé dans `configs/matopo/live/`)
+
+```bash
+python -m cisco_intent update --new-intent intent/topologie1/RSVPplease.json --dry-run
+python -m cisco_intent update --new-intent intent/topologie1/RSVPplease.json --push --gns3-project gns3/mine
+```
+
+Pour forcer le trafic IP dans le tunnel TE (tracé identique IP/MPLS), passer `"autoroute_announce": true` au niveau AS ou sur un tunnel.
+
 ### LAN: loopback → interface → subinterface VLAN
 
 - Loopback:

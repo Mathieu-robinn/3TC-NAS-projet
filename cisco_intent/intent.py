@@ -118,6 +118,10 @@ def validate_intent(intent: Dict[str, Any]) -> None:
     Lève ``ValueError`` avec une liste d'erreurs si l'intent est incohérent.
     ``seen_interfaces`` : évite deux fois la même interface sur un même routeur (core + CE-PE).
     """
+    # Import différé : te.py importe intent (_deep_get, get_all_nodes) ; un import
+    # au niveau module créerait une boucle intent → te → intent.
+    from cisco_intent.te import validate_traffic_engineering
+
     errors: List[str] = []
 
     name = intent.get("name")
@@ -188,6 +192,8 @@ def validate_intent(intent: Dict[str, Any]) -> None:
                     f"{as_name}: underlay.mpls.interfaces.mode requis "
                     f"(all_core_links ou explicit) lorsque mpls.enabled est vrai"
                 )
+
+        validate_traffic_engineering(as_name, as_data, errors)
 
         bgp = as_data.get("bgp", {}) or {}
         if bgp:

@@ -26,15 +26,50 @@ from __future__ import annotations
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # ``Path(__file__)`` = ce fichier ; .parent = cisco_intent/ ; .parent.parent = racine du repo
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+
+_INTENT_JSON_SKIP = frozenset({"old.intent.json", "new.intent.json", "metadata.json"})
 
 
 def configs_data_root() -> Path:
     """Racine ``configs/`` : uniquement des sous-dossiers par topologie (``name`` intent)."""
     return PROJECT_ROOT / "configs"
+
+
+def intent_json_files_in_dir(run_dir: Path) -> List[Path]:
+    """Fichiers intent JSON copiés dans un run (``live/``, ``staging/``, …), hors métadonnées update."""
+    run_dir = run_dir.resolve()
+    return sorted(
+        [
+            p
+            for p in run_dir.iterdir()
+            if p.is_file()
+            and p.suffix.lower() == ".json"
+            and p.name.lower() not in _INTENT_JSON_SKIP
+        ],
+        key=lambda p: p.name.lower(),
+    )
+
+
+def find_intent_in_run_dir(run_dir: Path) -> Path:
+    """
+    Choisit l'intent JSON dans un dossier de configs.
+
+    Préfère un nom commençant par ``Intent`` ; sinon le seul ``*.json`` présent.
+    """
+    intents = intent_json_files_in_dir(run_dir)
+    if not intents:
+        raise FileNotFoundError(f"Aucun intent JSON trouvé dans {run_dir}")
+    for p in intents:
+        if p.name.lower().startswith("intent"):
+            return p
+    if len(intents) == 1:
+        return intents[0]
+    names = ", ".join(p.name for p in intents)
+    raise ValueError(f"Plusieurs fichiers intent JSON dans {run_dir}: {names}")
 
 
 def default_c7200_startup_template() -> Path:
