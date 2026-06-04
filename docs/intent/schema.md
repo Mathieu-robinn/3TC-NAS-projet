@@ -150,6 +150,101 @@ Comportements:
 - `all_core_links`: `mpls ip` sur toutes les interfaces core.
 - `explicit`: `mpls ip` seulement si `links[].mpls=true`.
 
+#### `underlay.mpls.traffic_engineering`
+
+Active **MPLS Traffic Engineering (RSVP-TE)** en complément de LDP. Requis si le bloc AS `traffic_engineering` est renseigné.
+
+| Champ | Type | Requis | Défaut | Rôle |
+|---|---:|---:|---|---|
+| `enabled` | bool | oui* | — | Active TE/RSVP (global, interfaces core, extensions OSPF TE). |
+| `rsvp_default_bandwidth` | int | oui* | — | Valeur `ip rsvp bandwidth` (kb/s) sur chaque interface core MPLS. |
+
+\* Requis lorsque `enabled` est `true`.
+
+Commandes IOS produites (P et PE core) :
+- Global : `mpls traffic-eng tunnels`
+- Interfaces core MPLS : `mpls traffic-eng tunnels`, `ip rsvp bandwidth <valeur>`
+- OSPF (si `igp.protocol=ospf`) : `mpls traffic-eng router-id Loopback0`, `mpls traffic-eng area <n>`
+- PE tête uniquement : `ip explicit-path name …`, `interface Tunnel<id>` (`ip unnumbered Loopback0`, chemin explicite, `autoroute announce` si demandé)
+
+Limites :
+- TE/RSVP avec extensions OSPF TE uniquement ; **IS-IS + TE non généré** (intent `igp.protocol=isis`).
+- Chemins explicites : résolution des hops en **Loopback0** ; le `source_node` du tunnel est exclu des `next-address`.
+
+Exemple :
+
+```json
+"mpls": {
+  "enabled": true,
+  "interfaces": { "mode": "all_core_links" },
+  "traffic_engineering": {
+    "enabled": true,
+    "rsvp_default_bandwidth": 1000
+  }
+}
+```
+
+## `traffic_engineering` (niveau AS)
+
+- **Type**: object
+- **Requis**: non (mais obligatoire si `underlay.mpls.traffic_engineering.enabled=true`)
+- **Emplacement**: sous `autonomous_systems.<asName>` (même niveau que `nodes`, `links`, `underlay`)
+
+Décrit les **chemins explicites** et **tunnels TE** (routeur tête = PE `source_node`).
+
+| Champ | Type | Requis | Défaut | Rôle |
+|---|---:|---:|---|---|
+| `autoroute_announce` | bool | non | `false` | Si `true`, ajoute `tunnel mpls traffic-eng autoroute announce` sur chaque tunnel (sauf override par tunnel). |
+| `explicit_paths` | array | oui* | — | Chemins nommés ; sauts = noms de nœuds résolus en Loopback0. |
+| `tunnels` | array | oui* | — | Interfaces `Tunnel<id>` sur le PE source. |
+
+\* Au moins une entrée dans chaque liste lorsque TE est activé.
+
+### `traffic_engineering.explicit_paths[]`
+
+```json
+{
+  "name": "LONG-PATH-TO-PE2",
+  "hops": ["P1", "P2", "P3", "P4", "PE2"]
+}
+```
+
+| Champ | Type | Requis | Rôle |
+|---|---:|---:|---|
+| `name` | string | oui | Nom IOS du chemin (`ip explicit-path name <name> enable`). |
+| `hops` | array[string] | oui | Noms de nœuds core ; le générateur **exclut** le `source_node` du tunnel et résout chaque hop en **Loopback0**. |
+
+### `traffic_engineering.tunnels[]`
+
+```json
+{
+  "id": 1,
+  "source_node": "PE1",
+  "destination_node": "PE2",
+  "path_option_name": "LONG-PATH-TO-PE2",
+  "autoroute_announce": false
+}
+```
+
+| Champ | Type | Requis | Défaut | Rôle |
+|---|---:|---:|---|---|
+| `id` | int | oui | — | Numéro d’interface `Tunnel<id>`. |
+| `source_node` | string | oui | — | PE tête (seul routeur qui reçoit chemin + tunnel). |
+| `destination_node` | string | oui | — | PE destination (`tunnel destination` = loopback du PE). |
+| `path_option_name` | string | oui | — | Doit correspondre à `explicit_paths[].name`. |
+| `autoroute_announce` | bool | non | hérite de `traffic_engineering.autoroute_announce` | Injecte le tunnel dans OSPF (tracé IP = tracé MPLS). **Désactivé par défaut** pour garder des traceroutes IP et MPLS distincts. |
+
+### Mise à jour à chaud (`update`)
+
+Les changements TE/RSVP (activation, bande passante, chemins, tunnels, autoroute) sont pris en charge par **`python -m cisco_intent update`** : comparaison OLD (`configs/<name>/live/`) vs NEW (`staging/`), snippets dans `configs/<name>/backup/modifs/`, push telnet optionnel avec `--push`.
+
+Cas particuliers du diff :
+- **`ip explicit-path name …`** : bloc dédié ; si les sauts changent, le chemin est **supprimé puis recréé** (`no ip explicit-path name …` puis nouvelles lignes).
+- **`interface Tunnel*`** : patch incrémental comme les autres interfaces.
+- **`router ospf 1`** : ajout/suppression des lignes `mpls traffic-eng …` par diff de sous-lignes.
+
+Exemple intent complet : [`intent/topologie1/RSVPplease.json`](../../intent/topologie1/RSVPplease.json).
+
 ## `bgp` (core)
 
 ### `bgp.type`

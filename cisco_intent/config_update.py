@@ -28,6 +28,8 @@ Option ``--push`` :
 Pour étendre :
   - Nouveau type de bloc IOS : ajoute un préfixe dans ``is_mode_header`` et une règle
     dans ``removal_for_block_header`` si la suppression doit être spéciale.
+  - MPLS-TE : blocs ``ip explicit-path name …`` (remplacement complet si les sauts changent),
+    ``interface Tunnel*``, sous-lignes ``mpls traffic-eng`` / RSVP dans ``router ospf`` et interfaces core.
 ================================================================================
 """
 
@@ -50,13 +52,15 @@ from cisco_intent.backup_zip import zip_run_dir
 from cisco_intent.intent import load_validate_intent, topology_name_from_intent
 from cisco_intent.paths import (
     backup_modifs_dir,
+    find_intent_in_run_dir,
+    intent_json_files_in_dir,
     live_dir,
     prepare_dir_for_generation,
     scratch_old_intent_dir,
     staging_dir,
     sync_live_from_run,
 )
-INTENT_FILE_RE = re.compile(r"^Intent.*\.json$", re.IGNORECASE)
+INTENT_FILE_RE = re.compile(r"^Intent.*\.json$", re.IGNORECASE)  # legacy / push
 
 BANNED_CMD_RE = re.compile(
     r"(?i)^\s*(reload|write\s+erase|erase\s+(startup-config|nvram:)|format\s+|copy\s+.*startup-config|configure\s+replace)\b"
@@ -83,18 +87,6 @@ def parse_only_list(value: Optional[str]) -> Optional[Set[str]]:
     return set(items) if items else None
 
 
-def find_intent_in_run_dir(run_dir: Path) -> Path:
-    """Choisit un fichier ``Intent*.json`` dans un run de configs (préférence ``intent.v4.json``)."""
-    intents = [p for p in run_dir.iterdir() if p.is_file() and INTENT_FILE_RE.match(p.name)]
-    if not intents:
-        raise FileNotFoundError(f"Aucun intent (Intent*.json) trouvé dans {run_dir}")
-    intents.sort(key=lambda p: p.name.lower())
-    for p in intents:
-        if p.name.lower() == "intent.v4.json":
-            return p
-    return intents[0]
-
-
 def validate_live_for_update_old(live: Path, topology: str) -> None:
     """Vérifie que ``configs/<topology>/live/`` peut servir de OLD (``.cfg`` + ``Intent*.json``)."""
     live = live.resolve()
@@ -109,10 +101,9 @@ def validate_live_for_update_old(live: Path, topology: str) -> None:
             f"Aucun fichier .cfg dans {live}. Initialise configs/{topology}/live "
             "(voir ci-dessus) ou --old-configs-dir."
         )
-    intents = [p for p in live.iterdir() if p.is_file() and INTENT_FILE_RE.match(p.name)]
-    if not intents:
+    if not intent_json_files_in_dir(live):
         raise FileNotFoundError(
-            f"Aucun fichier Intent*.json dans {live}. Copie l'intent dans live ou utilise --old-configs-dir."
+            f"Aucun fichier intent JSON dans {live}. Copie l'intent dans live ou utilise --old-configs-dir."
         )
 
 
@@ -200,11 +191,17 @@ def is_mode_header(line: str) -> bool:
         "vrf definition ",
         "route-map ",
         "ip access-list ",
+        "ip explicit-path ",
         "class-map ",
         "policy-map ",
         "line ",
     )
     return any(s.lower().startswith(p) for p in starters)
+
+
+def is_explicit_path_header(header: str) -> bool:
+    """True si le bloc est un chemin explicite MPLS-TE (``ip explicit-path name … enable``)."""
+    return header.strip().lower().startswith("ip explicit-path name ")
 
 
 @dataclass
@@ -280,7 +277,7 @@ def negate_cmd(cmd: str) -> str:
 
 
 def _sort_interface_patch_additions(add_lines: List[str]) -> List[str]:
-    """Ordonne les sous-commandes ``interface`` pour un ordre IOS sûr (descr/VRF avant IP)."""
+    """Ordonne les sous-commandes ``interface`` pour un ordre IOS sûr (descr/VRF avant IP/MPLS/TE)."""
 
     def rank(ln: str) -> Tuple[int, str]:
         """Clé de tri : priorité numérique puis texte pour stabilité."""
@@ -295,7 +292,21 @@ def _sort_interface_patch_additions(add_lines: List[str]) -> List[str]:
             or s.startswith("ip unnumbered ")
         ):
             return (2, ln)
-        return (3, ln)
+        if s.startswith("mpls ip"):
+            return (3, ln)
+        if s.startswith("mpls traffic-eng tunnels"):
+            return (4, ln)
+        if s.startswith("ip rsvp bandwidth "):
+            return (5, ln)
+        if s.startswith("tunnel destination ") or s.startswith("tunnel mode "):
+            return (6, ln)
+        if s.startswith("tunnel mpls traffic-eng path-option "):
+            return (7, ln)
+        if s.startswith("tunnel mpls traffic-eng autoroute "):
+            return (8, ln)
+        if s == "no shutdown":
+            return (9, ln)
+        return (10, ln)
 
     return sorted(add_lines, key=rank)
 
@@ -352,6 +363,11 @@ def removal_for_block_header(header: str) -> List[str]:
     if hl.startswith("vrf definition "):
         return [f"no {h}"]
     if hl.startswith("ip access-list "):
+        return [f"no {h}"]
+    if is_explicit_path_header(h):
+        parts = h.split()
+        if len(parts) >= 4 and parts[2].lower() == "name":
+            return [f"no ip explicit-path name {parts[3]}"]
         return [f"no {h}"]
     if hl.startswith("class-map "):
         return [f"no {h}"]
@@ -429,6 +445,17 @@ def diff_cfg(old_cfg: ParsedCfg, new_cfg: ParsedCfg) -> List[str]:
 
     for header in sorted(intersect):
         if header in bgp_headers_full_replace:
+            continue
+
+        if is_explicit_path_header(header):
+            # IOS ne permet pas de patcher hop par hop : on supprime puis recrée le chemin.
+            old_sub = old_cfg.blocks.get(header, [])
+            new_sub = new_cfg.blocks.get(header, [])
+            if set(old_sub) != set(new_sub):
+                out.extend(removal_for_block_header(header))
+                out.append(header)
+                for sub in new_sub:
+                    out.append(sub)
             continue
 
         old_sub = old_cfg.blocks.get(header, [])

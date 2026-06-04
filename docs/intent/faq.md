@@ -4,6 +4,39 @@
 
 - Aires OSPF : **`underlay.igp.area.mode`** (`single_area` ou `explicit`, avec `igp_area` par lien si besoin).
 - MPLS sur les liens core : **`underlay.mpls.enabled`** et **`underlay.mpls.interfaces.mode`** (`all_core_links` ou `explicit`, avec `mpls` par lien si besoin).
+- MPLS-TE / RSVP : **`underlay.mpls.traffic_engineering`** + bloc AS **`traffic_engineering`** (chemins explicites, tunnels). Voir [schéma](schema.md#traffic_engineering-niveau-as).
+
+## MPLS-TE : pourquoi `autoroute_announce` est `false` par défaut ?
+
+`tunnel mpls traffic-eng autoroute announce` annonce le tunnel à OSPF comme un lien direct vers la destination. Le trafic IP **classique** (ex. `traceroute <loopback PE>`) est alors aspiré dans le tunnel TE — même chemin que `traceroute mpls ipv4`.
+
+Par défaut le générateur **n’ajoute pas** cette commande (`traffic_engineering.autoroute_announce: false`). Pour l’activer :
+
+```json
+"traffic_engineering": {
+  "autoroute_announce": true,
+  "explicit_paths": [ "..." ],
+  "tunnels": [ "..." ]
+}
+```
+
+Ou par tunnel : `"autoroute_announce": true` sur une entrée de `tunnels[]`.
+
+## Comment activer ou modifier le TE à chaud ?
+
+1. Modifier l’intent (TE, chemins, tunnels, bande passante RSVP, autoroute).
+2. Lancer :
+
+```bash
+python -m cisco_intent update --new-intent intent/topologie1/RSVPplease.json --dry-run
+python -m cisco_intent update --new-intent intent/topologie1/RSVPplease.json --push --gns3-project gns3/mine
+```
+
+- OLD = `configs/<name>/live/` (dernier jeu appliqué).
+- NEW = régénéré dans `staging/`, diff → zip `backup/modifs/`.
+- Après push réussi, `live/` est synchronisé depuis `staging/`.
+
+Les blocs TE (`mpls traffic-eng`, RSVP, chemins explicites, `Tunnel*`, extensions OSPF TE) sont gérés par le même moteur de diff que le reste (voir [schéma — update TE](schema.md#mise-à-jour-à-chaud-update)).
 
 ## “RR clients” en iBGP, c’est quoi ?
 
@@ -57,10 +90,10 @@ Méthodes d’annonce BGP:
 
 ## Où sont les fichiers intent et les sorties ?
 
-- **Intents** : répertoire [`intent/`](../../intent/) à la racine du dépôt (ex. `intent/topologie1/Intent_*.json`). Chaque intent doit avoir un champ racine **`name`** (identifiant de topologie).
-- **Configs complètes** : tout est sous **`configs/<name>/`** où `<name>` vient de l’intent. `generate` sans `--push` → **`configs/<name>/live/`** si aucun `*.cfg` dans ce `live/`, sinon **`configs/<name>/staging/`** ; avec `--push` → toujours ce `live/`. Zip **`configs/<name>/backup/full_configs/Configs-<timestamp>.zip`** à chaque génération.
+- **Intents** : répertoire [`intent/`](../../intent/) à la racine du dépôt (ex. `intent/topologie1/Intent_*.json`, `RSVPplease.json`). Chaque intent doit avoir un champ racine **`name`** (identifiant de topologie).
+- **Configs complètes** : tout est sous **`configs/<name>/`** où `<name>` vient de l’intent. `generate` sans `--push` → **`configs/<name>/live/`** si aucun `*.cfg` dans ce `live/`, sinon **`configs/<name>/staging/`** ; avec `--push` → toujours ce `live/`. Zip **`configs/<name>/backup/full_configs/Configs-<timestamp>.zip`** à chaque génération. L’intent source est **copié tel quel** dans le dossier de sortie (nom de fichier conservé, ex. `RSVPplease.json`).
 - **Modifs (`update`)** : archive **`configs/<name>/backup/modifs/Modifs-<timestamp>.zip`** (push ultérieur = dézipper puis `push <dossier>`).
-- **`configs/<name>/live/`** : dernier jeu appliqué pour cette topologie ; OLD par défaut pour `update` lorsque l’intent NEW a le même `name` (sinon `--old-configs-dir`).
+- **`configs/<name>/live/`** : dernier jeu appliqué pour cette topologie ; OLD par défaut pour `update` lorsque l’intent NEW a le même `name` (sinon `--old-configs-dir`). Doit contenir au moins un **`*.json`** (intent) et des **`*.cfg`** — pas seulement les fichiers nommés `Intent*.json`.
 - **Reset lab** : **`configs/default/default-conf-C7200.txt`** — copié vers chaque startup Dynamips par la commande **`reset`** (hors arborescence par topologie).
 
 Ces chemins par défaut sont relatifs à la **racine du dépôt** (`cisco_intent.paths.PROJECT_ROOT`).
@@ -94,6 +127,7 @@ Oui, le schéma est conçu pour évoluer. Aujourd’hui, le générateur support
 - IGP: `ospf` (complet) + `isis` (support minimal)
 - iBGP peering: `rr_clients`, `full_mesh`, `rr_redundant`
 - MPLS activation: `all_core_links`, `explicit`
+- MPLS-TE / RSVP: chemins explicites, tunnels, extensions OSPF TE, update à chaud
 - LAN: `loopback`, `interface`, `subinterface_vlan`
 
 Extensions classiques possibles (non implémentées ici):
