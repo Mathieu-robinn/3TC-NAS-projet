@@ -37,6 +37,7 @@ import sys
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from ipaddress import IPv4Address
 
 from cisco_intent.allocation import (
     _enrich_core_alloc_with_underlay,
@@ -240,14 +241,27 @@ def gen_te_tunnels(
 
 
 def isis_net_from_loopback(loopback_ip: str, area: str = "49.0001") -> str:
-    """Construit une chaîne NET IS-IS à partir de l'IPv4 du loopback (system ID dérivé des octets)."""
-    # IS-IS n'utilise pas une adresse IP comme router-id; il utilise un NET.
-    # Pour rester déterministe, on fabrique un system-id depuis les octets de la
-    # loopback. Exemple très simplifié: 1.0.0.1 -> 0100.0001.0001.
-    octets = [int(x) for x in loopback_ip.split(".")]
-    if len(octets) != 4:
-        raise ValueError(f"Loopback IPv4 invalide pour NET IS-IS: {loopback_ip}")
-    system_id = f"{octets[0]:02d}{octets[1]:02d}.{octets[2]:02d}{octets[3]:02d}.0001"
+    """
+    Construit une chaîne NET IS-IS à partir de l'IPv4 du loopback.
+    Le system ID fait toujours 6 octets = 12 caractères hexadécimaux.
+
+    Exemple :
+    1.0.0.1     -> 0100.0001.0001
+    100.0.0.0   -> 6400.0000.0001
+    192.168.1.1 -> c0a8.0101.0001
+    """
+
+    ip = IPv4Address(loopback_ip)
+    octets = ip.packed  # 4 octets binaires
+
+    # 4 octets IPv4 + 2 octets fixes pour atteindre 6 octets IS-IS
+    system_id_hex = octets.hex() + "0001"
+
+    # groupement Cisco-like : xxxx.xxxx.xxxx
+    system_id = ".".join(
+        system_id_hex[i:i+4] for i in range(0, 12, 4)
+    )
+
     return f"{area}.{system_id}.00"
 
 
@@ -528,8 +542,10 @@ def gen_ce(
     advertise = lan_cfg.get("bgp", {}).get("advertise", True)
     method = lan_cfg.get("bgp", {}).get("method", "network_statement")
     if lan and advertise and method == "network_statement":
-        # Méthode précise: on annonce uniquement le LAN calculé.
-        config += f"  network {lan['ip']} mask {lan['mask']}\n"
+        # IOS exige que network/mask matche la RIB. Pour un préfixe /32, l'IP hôte
+        # est le réseau ; pour un préfixe plus large, utiliser l'adresse réseau.
+        network_addr = lan["ip"] if lan["prefix_len"] == 32 else lan["network"]
+        config += f"  network {network_addr} mask {lan['mask']}\n"
     elif lan and advertise and method == "redistribute_connected":
         # Méthode plus générique mais filtrée: la route-map limite la redistribution
         # à l'interface LAN, pour ne pas annoncer le lien CE-PE.
